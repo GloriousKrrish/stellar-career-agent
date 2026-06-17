@@ -9,38 +9,231 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as AppRouteImport } from './routes/app'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AppIndexRouteImport } from './routes/app.index'
+import { Route as AuthRegisterRouteImport } from './routes/auth.register'
+import { Route as AuthLoginRouteImport } from './routes/auth.login'
+import { Route as AuthForgotPasswordRouteImport } from './routes/auth.forgot-password'
+import { Route as AppSettingsRouteImport } from './routes/app.settings'
+import { Route as AppResumeRouteImport } from './routes/app.resume'
+import { Route as AppJobsRouteImport } from './routes/app.jobs'
+import { Route as AppInterviewPrepRouteImport } from './routes/app.interview-prep'
+import { Route as AppDashboardRouteImport } from './routes/app.dashboard'
+import { Route as AppCoverLettersRouteImport } from './routes/app.cover-letters'
+import { Route as AppApplicationsRouteImport } from './routes/app.applications'
+import { Route as AppAnalyticsRouteImport } from './routes/app.analytics'
+import { Route as AppAgentsRouteImport } from './routes/app.agents'
+import { Route as AppJobsJobIdRouteImport } from './routes/app.jobs.$jobId'
 
+const AppRoute = AppRouteImport.update({
+  id: '/app',
+  path: '/app',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppIndexRoute = AppIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AuthRegisterRoute = AuthRegisterRouteImport.update({
+  id: '/auth/register',
+  path: '/auth/register',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthLoginRoute = AuthLoginRouteImport.update({
+  id: '/auth/login',
+  path: '/auth/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthForgotPasswordRoute = AuthForgotPasswordRouteImport.update({
+  id: '/auth/forgot-password',
+  path: '/auth/forgot-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppResumeRoute = AppResumeRouteImport.update({
+  id: '/resume',
+  path: '/resume',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppJobsRoute = AppJobsRouteImport.update({
+  id: '/jobs',
+  path: '/jobs',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppInterviewPrepRoute = AppInterviewPrepRouteImport.update({
+  id: '/interview-prep',
+  path: '/interview-prep',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDashboardRoute = AppDashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppCoverLettersRoute = AppCoverLettersRouteImport.update({
+  id: '/cover-letters',
+  path: '/cover-letters',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppApplicationsRoute = AppApplicationsRouteImport.update({
+  id: '/applications',
+  path: '/applications',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAnalyticsRoute = AppAnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAgentsRoute = AppAgentsRouteImport.update({
+  id: '/agents',
+  path: '/agents',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppJobsJobIdRoute = AppJobsJobIdRouteImport.update({
+  id: '/$jobId',
+  path: '/$jobId',
+  getParentRoute: () => AppJobsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/app': typeof AppRouteWithChildren
+  '/app/agents': typeof AppAgentsRoute
+  '/app/analytics': typeof AppAnalyticsRoute
+  '/app/applications': typeof AppApplicationsRoute
+  '/app/cover-letters': typeof AppCoverLettersRoute
+  '/app/dashboard': typeof AppDashboardRoute
+  '/app/interview-prep': typeof AppInterviewPrepRoute
+  '/app/jobs': typeof AppJobsRouteWithChildren
+  '/app/resume': typeof AppResumeRoute
+  '/app/settings': typeof AppSettingsRoute
+  '/auth/forgot-password': typeof AuthForgotPasswordRoute
+  '/auth/login': typeof AuthLoginRoute
+  '/auth/register': typeof AuthRegisterRoute
+  '/app/': typeof AppIndexRoute
+  '/app/jobs/$jobId': typeof AppJobsJobIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/app/agents': typeof AppAgentsRoute
+  '/app/analytics': typeof AppAnalyticsRoute
+  '/app/applications': typeof AppApplicationsRoute
+  '/app/cover-letters': typeof AppCoverLettersRoute
+  '/app/dashboard': typeof AppDashboardRoute
+  '/app/interview-prep': typeof AppInterviewPrepRoute
+  '/app/jobs': typeof AppJobsRouteWithChildren
+  '/app/resume': typeof AppResumeRoute
+  '/app/settings': typeof AppSettingsRoute
+  '/auth/forgot-password': typeof AuthForgotPasswordRoute
+  '/auth/login': typeof AuthLoginRoute
+  '/auth/register': typeof AuthRegisterRoute
+  '/app': typeof AppIndexRoute
+  '/app/jobs/$jobId': typeof AppJobsJobIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/app': typeof AppRouteWithChildren
+  '/app/agents': typeof AppAgentsRoute
+  '/app/analytics': typeof AppAnalyticsRoute
+  '/app/applications': typeof AppApplicationsRoute
+  '/app/cover-letters': typeof AppCoverLettersRoute
+  '/app/dashboard': typeof AppDashboardRoute
+  '/app/interview-prep': typeof AppInterviewPrepRoute
+  '/app/jobs': typeof AppJobsRouteWithChildren
+  '/app/resume': typeof AppResumeRoute
+  '/app/settings': typeof AppSettingsRoute
+  '/auth/forgot-password': typeof AuthForgotPasswordRoute
+  '/auth/login': typeof AuthLoginRoute
+  '/auth/register': typeof AuthRegisterRoute
+  '/app/': typeof AppIndexRoute
+  '/app/jobs/$jobId': typeof AppJobsJobIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/app'
+    | '/app/agents'
+    | '/app/analytics'
+    | '/app/applications'
+    | '/app/cover-letters'
+    | '/app/dashboard'
+    | '/app/interview-prep'
+    | '/app/jobs'
+    | '/app/resume'
+    | '/app/settings'
+    | '/auth/forgot-password'
+    | '/auth/login'
+    | '/auth/register'
+    | '/app/'
+    | '/app/jobs/$jobId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/app/agents'
+    | '/app/analytics'
+    | '/app/applications'
+    | '/app/cover-letters'
+    | '/app/dashboard'
+    | '/app/interview-prep'
+    | '/app/jobs'
+    | '/app/resume'
+    | '/app/settings'
+    | '/auth/forgot-password'
+    | '/auth/login'
+    | '/auth/register'
+    | '/app'
+    | '/app/jobs/$jobId'
+  id:
+    | '__root__'
+    | '/'
+    | '/app'
+    | '/app/agents'
+    | '/app/analytics'
+    | '/app/applications'
+    | '/app/cover-letters'
+    | '/app/dashboard'
+    | '/app/interview-prep'
+    | '/app/jobs'
+    | '/app/resume'
+    | '/app/settings'
+    | '/auth/forgot-password'
+    | '/auth/login'
+    | '/auth/register'
+    | '/app/'
+    | '/app/jobs/$jobId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AppRoute: typeof AppRouteWithChildren
+  AuthForgotPasswordRoute: typeof AuthForgotPasswordRoute
+  AuthLoginRoute: typeof AuthLoginRoute
+  AuthRegisterRoute: typeof AuthRegisterRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/app': {
+      id: '/app'
+      path: '/app'
+      fullPath: '/app'
+      preLoaderRoute: typeof AppRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -48,11 +241,152 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/app/': {
+      id: '/app/'
+      path: '/'
+      fullPath: '/app/'
+      preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/auth/register': {
+      id: '/auth/register'
+      path: '/auth/register'
+      fullPath: '/auth/register'
+      preLoaderRoute: typeof AuthRegisterRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth/login': {
+      id: '/auth/login'
+      path: '/auth/login'
+      fullPath: '/auth/login'
+      preLoaderRoute: typeof AuthLoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth/forgot-password': {
+      id: '/auth/forgot-password'
+      path: '/auth/forgot-password'
+      fullPath: '/auth/forgot-password'
+      preLoaderRoute: typeof AuthForgotPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/app/settings': {
+      id: '/app/settings'
+      path: '/settings'
+      fullPath: '/app/settings'
+      preLoaderRoute: typeof AppSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/resume': {
+      id: '/app/resume'
+      path: '/resume'
+      fullPath: '/app/resume'
+      preLoaderRoute: typeof AppResumeRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/jobs': {
+      id: '/app/jobs'
+      path: '/jobs'
+      fullPath: '/app/jobs'
+      preLoaderRoute: typeof AppJobsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/interview-prep': {
+      id: '/app/interview-prep'
+      path: '/interview-prep'
+      fullPath: '/app/interview-prep'
+      preLoaderRoute: typeof AppInterviewPrepRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/dashboard': {
+      id: '/app/dashboard'
+      path: '/dashboard'
+      fullPath: '/app/dashboard'
+      preLoaderRoute: typeof AppDashboardRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/cover-letters': {
+      id: '/app/cover-letters'
+      path: '/cover-letters'
+      fullPath: '/app/cover-letters'
+      preLoaderRoute: typeof AppCoverLettersRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/applications': {
+      id: '/app/applications'
+      path: '/applications'
+      fullPath: '/app/applications'
+      preLoaderRoute: typeof AppApplicationsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/analytics': {
+      id: '/app/analytics'
+      path: '/analytics'
+      fullPath: '/app/analytics'
+      preLoaderRoute: typeof AppAnalyticsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/agents': {
+      id: '/app/agents'
+      path: '/agents'
+      fullPath: '/app/agents'
+      preLoaderRoute: typeof AppAgentsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/jobs/$jobId': {
+      id: '/app/jobs/$jobId'
+      path: '/$jobId'
+      fullPath: '/app/jobs/$jobId'
+      preLoaderRoute: typeof AppJobsJobIdRouteImport
+      parentRoute: typeof AppJobsRoute
+    }
   }
 }
 
+interface AppJobsRouteChildren {
+  AppJobsJobIdRoute: typeof AppJobsJobIdRoute
+}
+
+const AppJobsRouteChildren: AppJobsRouteChildren = {
+  AppJobsJobIdRoute: AppJobsJobIdRoute,
+}
+
+const AppJobsRouteWithChildren =
+  AppJobsRoute._addFileChildren(AppJobsRouteChildren)
+
+interface AppRouteChildren {
+  AppAgentsRoute: typeof AppAgentsRoute
+  AppAnalyticsRoute: typeof AppAnalyticsRoute
+  AppApplicationsRoute: typeof AppApplicationsRoute
+  AppCoverLettersRoute: typeof AppCoverLettersRoute
+  AppDashboardRoute: typeof AppDashboardRoute
+  AppInterviewPrepRoute: typeof AppInterviewPrepRoute
+  AppJobsRoute: typeof AppJobsRouteWithChildren
+  AppResumeRoute: typeof AppResumeRoute
+  AppSettingsRoute: typeof AppSettingsRoute
+  AppIndexRoute: typeof AppIndexRoute
+}
+
+const AppRouteChildren: AppRouteChildren = {
+  AppAgentsRoute: AppAgentsRoute,
+  AppAnalyticsRoute: AppAnalyticsRoute,
+  AppApplicationsRoute: AppApplicationsRoute,
+  AppCoverLettersRoute: AppCoverLettersRoute,
+  AppDashboardRoute: AppDashboardRoute,
+  AppInterviewPrepRoute: AppInterviewPrepRoute,
+  AppJobsRoute: AppJobsRouteWithChildren,
+  AppResumeRoute: AppResumeRoute,
+  AppSettingsRoute: AppSettingsRoute,
+  AppIndexRoute: AppIndexRoute,
+}
+
+const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AppRoute: AppRouteWithChildren,
+  AuthForgotPasswordRoute: AuthForgotPasswordRoute,
+  AuthLoginRoute: AuthLoginRoute,
+  AuthRegisterRoute: AuthRegisterRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
