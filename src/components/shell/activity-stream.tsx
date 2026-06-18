@@ -90,6 +90,7 @@ export function ActivityStream({ open }: { open: boolean }) {
           </div>
         </motion.aside>
       )}
+      <ActivityDetailDialog event={active} onClose={() => setActive(null)} />
     </AnimatePresence>
   );
 }
