@@ -32,6 +32,7 @@ export const Route = createFileRoute("/app/jobs/$jobId")({
 function JobDetail() {
   const { job } = Route.useLoaderData() as { job: Job };
   const userSet = new Set(USER.skills.map((s) => s.toLowerCase()));
+  const [applyOpen, setApplyOpen] = useState(false);
 
   return (
     <>
