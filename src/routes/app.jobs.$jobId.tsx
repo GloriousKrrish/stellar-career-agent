@@ -180,6 +180,7 @@ function JobDetail() {
           </div>
         </aside>
       </div>
+      <ApplyDialog job={applyOpen ? job : null} onClose={() => setApplyOpen(false)} />
     </>
   );
 }
