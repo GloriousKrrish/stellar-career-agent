@@ -60,7 +60,20 @@ function ResumePage() {
 
   return (
     <>
-      <PageHeader title="Resume Analyzer" subtitle="Upload your resume. Aria does the rest." />
+      <PageHeader
+        title="Resume Analyzer"
+        subtitle="Upload your resume. Aria does the rest."
+        actions={
+          phase === "done" ? (
+            <button
+              onClick={exportResumeReport}
+              className="inline-flex items-center gap-1.5 rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90"
+            >
+              <Download className="h-3.5 w-3.5" /> Export PDF report
+            </button>
+          ) : undefined
+        }
+      />
 
       <AnimatePresence mode="wait">
         {phase === "idle" && (
