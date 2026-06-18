@@ -88,6 +88,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "twitter:site", content: "@Lovable" },
       { name: "twitter:title", content: "Aria — Your AI Career Agent" },
       { name: "twitter:description", content: "Upload your resume once. Let intelligent agents discover, evaluate and apply to the most relevant jobs across the web." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/1049b689-0ab5-425f-8e95-7e837a714148/id-preview-d6b265e4--dd594eaf-b763-4f67-850d-c17150bac644.lovable.app-1781758092979.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/1049b689-0ab5-425f-8e95-7e837a714148/id-preview-d6b265e4--dd594eaf-b763-4f67-850d-c17150bac644.lovable.app-1781758092979.png" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
