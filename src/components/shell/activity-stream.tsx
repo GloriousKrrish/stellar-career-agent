@@ -57,21 +57,23 @@ export function ActivityStream({ open }: { open: boolean }) {
           <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
             <AnimatePresence initial={false}>
               {events.map((e) => (
-                <motion.div
+                <motion.button
                   key={e.id}
                   layout
+                  type="button"
+                  onClick={() => setActive(e)}
                   initial={{ opacity: 0, y: -8, scale: 0.98 }}
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-                  className="rounded-xl px-3 py-2.5 hover:bg-sidebar-accent/60 transition-colors"
+                  className="w-full text-left rounded-xl px-3 py-2.5 hover:bg-sidebar-accent/60 transition-colors group cursor-pointer"
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className={`text-[10px] uppercase tracking-wider rounded-full px-2 py-0.5 ${kindStyles[e.kind]}`}>{e.agent}</span>
                     <span className="text-[11px] text-muted-foreground tabular-nums">{e.time}</span>
                   </div>
-                  <p className="text-sm leading-snug">{e.text}</p>
-                </motion.div>
+                  <p className="text-sm leading-snug group-hover:text-foreground">{e.text}</p>
+                </motion.button>
               ))}
             </AnimatePresence>
           </div>
