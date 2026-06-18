@@ -57,7 +57,7 @@ function JobDetail() {
               </div>
             </div>
             <div className="flex flex-col gap-2">
-              <button className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90">Apply via Aria</button>
+              <button onClick={() => setApplyOpen(true)} className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90">Apply via Aria</button>
               <div className="flex gap-2 justify-end">
                 <button className="h-8 w-8 inline-flex items-center justify-center rounded-full border border-border hover:bg-muted"><BookmarkPlus className="h-4 w-4" /></button>
                 <button className="h-8 w-8 inline-flex items-center justify-center rounded-full border border-border hover:bg-muted"><Share2 className="h-4 w-4" /></button>
