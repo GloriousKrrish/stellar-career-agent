@@ -16,6 +16,7 @@ const kindStyles: Record<ActivityEvent["kind"], string> = {
 
 export function ActivityStream({ open }: { open: boolean }) {
   const [events, setEvents] = useState(ACTIVITY);
+  const [active, setActive] = useState<ActivityEvent | null>(null);
 
   // Simulate live events
   useEffect(() => {
