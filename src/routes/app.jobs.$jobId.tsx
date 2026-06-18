@@ -2,9 +2,11 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import { ArrowLeft, MapPin, Building2, Sparkles, BookmarkPlus, Share2 } from "lucide-react";
 import { motion } from "framer-motion";
+import { useState } from "react";
 import { getJob } from "@/lib/mock/jobs";
 import type { Job } from "@/lib/types";
 import { USER } from "@/lib/mock/user";
+import { ApplyDialog } from "@/components/apply/apply-dialog";
 
 export const Route = createFileRoute("/app/jobs/$jobId")({
   loader: ({ params }) => {
