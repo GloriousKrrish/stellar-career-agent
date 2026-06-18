@@ -17,6 +17,7 @@ import { Route as AuthLoginRouteImport } from './routes/auth.login'
 import { Route as AuthForgotPasswordRouteImport } from './routes/auth.forgot-password'
 import { Route as AppSettingsRouteImport } from './routes/app.settings'
 import { Route as AppResumeRouteImport } from './routes/app.resume'
+import { Route as AppOnboardingRouteImport } from './routes/app.onboarding'
 import { Route as AppJobsRouteImport } from './routes/app.jobs'
 import { Route as AppInterviewPrepRouteImport } from './routes/app.interview-prep'
 import { Route as AppDashboardRouteImport } from './routes/app.dashboard'
@@ -64,6 +65,11 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
 const AppResumeRoute = AppResumeRouteImport.update({
   id: '/resume',
   path: '/resume',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppOnboardingRoute = AppOnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
   getParentRoute: () => AppRoute,
 } as any)
 const AppJobsRoute = AppJobsRouteImport.update({
@@ -117,6 +123,7 @@ export interface FileRoutesByFullPath {
   '/app/dashboard': typeof AppDashboardRoute
   '/app/interview-prep': typeof AppInterviewPrepRoute
   '/app/jobs': typeof AppJobsRouteWithChildren
+  '/app/onboarding': typeof AppOnboardingRoute
   '/app/resume': typeof AppResumeRoute
   '/app/settings': typeof AppSettingsRoute
   '/auth/forgot-password': typeof AuthForgotPasswordRoute
@@ -134,6 +141,7 @@ export interface FileRoutesByTo {
   '/app/dashboard': typeof AppDashboardRoute
   '/app/interview-prep': typeof AppInterviewPrepRoute
   '/app/jobs': typeof AppJobsRouteWithChildren
+  '/app/onboarding': typeof AppOnboardingRoute
   '/app/resume': typeof AppResumeRoute
   '/app/settings': typeof AppSettingsRoute
   '/auth/forgot-password': typeof AuthForgotPasswordRoute
@@ -153,6 +161,7 @@ export interface FileRoutesById {
   '/app/dashboard': typeof AppDashboardRoute
   '/app/interview-prep': typeof AppInterviewPrepRoute
   '/app/jobs': typeof AppJobsRouteWithChildren
+  '/app/onboarding': typeof AppOnboardingRoute
   '/app/resume': typeof AppResumeRoute
   '/app/settings': typeof AppSettingsRoute
   '/auth/forgot-password': typeof AuthForgotPasswordRoute
@@ -173,6 +182,7 @@ export interface FileRouteTypes {
     | '/app/dashboard'
     | '/app/interview-prep'
     | '/app/jobs'
+    | '/app/onboarding'
     | '/app/resume'
     | '/app/settings'
     | '/auth/forgot-password'
@@ -190,6 +200,7 @@ export interface FileRouteTypes {
     | '/app/dashboard'
     | '/app/interview-prep'
     | '/app/jobs'
+    | '/app/onboarding'
     | '/app/resume'
     | '/app/settings'
     | '/auth/forgot-password'
@@ -208,6 +219,7 @@ export interface FileRouteTypes {
     | '/app/dashboard'
     | '/app/interview-prep'
     | '/app/jobs'
+    | '/app/onboarding'
     | '/app/resume'
     | '/app/settings'
     | '/auth/forgot-password'
@@ -281,6 +293,13 @@ declare module '@tanstack/react-router' {
       path: '/resume'
       fullPath: '/app/resume'
       preLoaderRoute: typeof AppResumeRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/onboarding': {
+      id: '/app/onboarding'
+      path: '/onboarding'
+      fullPath: '/app/onboarding'
+      preLoaderRoute: typeof AppOnboardingRouteImport
       parentRoute: typeof AppRoute
     }
     '/app/jobs': {
@@ -361,6 +380,7 @@ interface AppRouteChildren {
   AppDashboardRoute: typeof AppDashboardRoute
   AppInterviewPrepRoute: typeof AppInterviewPrepRoute
   AppJobsRoute: typeof AppJobsRouteWithChildren
+  AppOnboardingRoute: typeof AppOnboardingRoute
   AppResumeRoute: typeof AppResumeRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
@@ -374,6 +394,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppDashboardRoute: AppDashboardRoute,
   AppInterviewPrepRoute: AppInterviewPrepRoute,
   AppJobsRoute: AppJobsRouteWithChildren,
+  AppOnboardingRoute: AppOnboardingRoute,
   AppResumeRoute: AppResumeRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,

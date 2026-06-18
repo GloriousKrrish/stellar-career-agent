@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Sparkles } from "lucide-react";
 import { ACTIVITY } from "@/lib/mock/agents";
 import type { ActivityEvent } from "@/lib/types";
+import { ActivityDetailDialog } from "@/components/activity/activity-detail-dialog";
 
 const kindStyles: Record<ActivityEvent["kind"], string> = {
   discover: "bg-secondary text-secondary-foreground",
