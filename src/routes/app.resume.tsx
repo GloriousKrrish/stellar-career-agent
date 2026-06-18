@@ -1,10 +1,11 @@
 "use client";
 import { createFileRoute } from "@tanstack/react-router";
-import { Upload, FileText, CheckCircle2 } from "lucide-react";
+import { Upload, FileText, CheckCircle2, Download } from "lucide-react";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { PageHeader } from "@/components/shell/sidebar";
 import { USER } from "@/lib/mock/user";
+import { exportResumeReport } from "@/lib/pdf/resume-report";
 
 export const Route = createFileRoute("/app/resume")({
   head: () => ({
@@ -59,7 +60,20 @@ function ResumePage() {
 
   return (
     <>
-      <PageHeader title="Resume Analyzer" subtitle="Upload your resume. Aria does the rest." />
+      <PageHeader
+        title="Resume Analyzer"
+        subtitle="Upload your resume. Aria does the rest."
+        actions={
+          phase === "done" ? (
+            <button
+              onClick={exportResumeReport}
+              className="inline-flex items-center gap-1.5 rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90"
+            >
+              <Download className="h-3.5 w-3.5" /> Export PDF report
+            </button>
+          ) : undefined
+        }
+      />
 
       <AnimatePresence mode="wait">
         {phase === "idle" && (

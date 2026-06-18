@@ -138,7 +138,7 @@ export function AuthSubmit({ label }: { label: string }) {
   );
 }
 
-export function useAuthSubmit() {
+export function useAuthSubmit(redirectTo: "/app/dashboard" | "/app/onboarding" = "/app/dashboard") {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   return {
@@ -148,7 +148,7 @@ export function useAuthSubmit() {
       setLoading(true);
       setTimeout(() => {
         signIn();
-        navigate({ to: "/app/dashboard" });
+        navigate({ to: redirectTo });
       }, 700);
     },
   };

@@ -2,9 +2,11 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import { ArrowLeft, MapPin, Building2, Sparkles, BookmarkPlus, Share2 } from "lucide-react";
 import { motion } from "framer-motion";
+import { useState } from "react";
 import { getJob } from "@/lib/mock/jobs";
 import type { Job } from "@/lib/types";
 import { USER } from "@/lib/mock/user";
+import { ApplyDialog } from "@/components/apply/apply-dialog";
 
 export const Route = createFileRoute("/app/jobs/$jobId")({
   loader: ({ params }) => {
@@ -30,6 +32,7 @@ export const Route = createFileRoute("/app/jobs/$jobId")({
 function JobDetail() {
   const { job } = Route.useLoaderData() as { job: Job };
   const userSet = new Set(USER.skills.map((s) => s.toLowerCase()));
+  const [applyOpen, setApplyOpen] = useState(false);
 
   return (
     <>
@@ -54,7 +57,7 @@ function JobDetail() {
               </div>
             </div>
             <div className="flex flex-col gap-2">
-              <button className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90">Apply via Aria</button>
+              <button onClick={() => setApplyOpen(true)} className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90">Apply via Aria</button>
               <div className="flex gap-2 justify-end">
                 <button className="h-8 w-8 inline-flex items-center justify-center rounded-full border border-border hover:bg-muted"><BookmarkPlus className="h-4 w-4" /></button>
                 <button className="h-8 w-8 inline-flex items-center justify-center rounded-full border border-border hover:bg-muted"><Share2 className="h-4 w-4" /></button>
@@ -177,6 +180,7 @@ function JobDetail() {
           </div>
         </aside>
       </div>
+      <ApplyDialog job={applyOpen ? job : null} onClose={() => setApplyOpen(false)} />
     </>
   );
 }

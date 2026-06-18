@@ -12,7 +12,7 @@ export const Route = createFileRoute("/auth/register")({
 });
 
 function RegisterPage() {
-  const { submit } = useAuthSubmit();
+  const { submit } = useAuthSubmit("/app/onboarding");
   return (
     <AuthLayout
       title="Meet your career agents."
