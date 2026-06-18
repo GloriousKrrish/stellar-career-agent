@@ -1,10 +1,11 @@
 "use client";
 import { createFileRoute } from "@tanstack/react-router";
-import { Upload, FileText, CheckCircle2 } from "lucide-react";
+import { Upload, FileText, CheckCircle2, Download } from "lucide-react";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { PageHeader } from "@/components/shell/sidebar";
 import { USER } from "@/lib/mock/user";
+import { exportResumeReport } from "@/lib/pdf/resume-report";
 
 export const Route = createFileRoute("/app/resume")({
   head: () => ({
