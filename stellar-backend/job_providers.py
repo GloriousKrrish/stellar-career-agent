@@ -236,7 +236,7 @@ async def fetch_arbeitnow(role: str, location: str) -> list[dict]:
                     loc_match = not location or location.lower() in job_loc.lower()
                     if not (is_remote or loc_match):
                         continue
-                    tags_list = j.get("tags") or []
+                    tags_list = [str(t) for t in (j.get("tags") or []) if t]
                     date_posted = j.get("created_at", "")[:10] if j.get("created_at") else "Recently"
                     jobs.append(make_job(
                         title=j.get("title", ""),
