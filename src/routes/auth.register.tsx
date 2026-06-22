@@ -12,7 +12,7 @@ export const Route = createFileRoute("/auth/register")({
 });
 
 function RegisterPage() {
-  const { submit } = useAuthSubmit("/app/onboarding");
+  const { submit, loading, error } = useAuthSubmit("/app/onboarding");
   return (
     <AuthLayout
       title="Meet your career agents."
@@ -20,12 +20,14 @@ function RegisterPage() {
       switchLink={<>Already with us? <Link to="/auth/login" className="text-foreground underline-offset-4 hover:underline">Sign in</Link></>}
     >
       <form onSubmit={submit} className="mt-6 space-y-4">
-        <AuthInput label="Full name" required autoComplete="name" placeholder="Alex Morgan" />
-        <AuthInput label="Email" type="email" autoComplete="email" required placeholder="you@company.com" />
-        <AuthInput label="Password" type="password" autoComplete="new-password" required placeholder="At least 8 characters" />
-        <AuthSubmit label="Create account" />
+        {error && <div className="text-xs text-red-500 bg-red-50 p-3 rounded-xl border border-red-200">{error}</div>}
+        <AuthInput label="Full name" name="name" required autoComplete="name" placeholder="Alex Morgan" />
+        <AuthInput label="Email" name="email" type="email" autoComplete="email" required placeholder="you@company.com" />
+        <AuthInput label="Password" name="password" type="password" autoComplete="new-password" required placeholder="At least 8 characters" />
+        <AuthSubmit label={loading ? "Creating account..." : "Create account"} disabled={loading} />
         <p className="text-[11px] text-muted-foreground">By continuing you agree to our Terms and Privacy.</p>
       </form>
     </AuthLayout>
   );
 }
+

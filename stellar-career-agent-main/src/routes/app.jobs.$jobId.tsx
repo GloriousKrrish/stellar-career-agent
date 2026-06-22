@@ -16,8 +16,11 @@ export const Route = createFileRoute("/app/jobs/$jobId")({
       runId: search.runId as string | undefined,
     };
   },
-  loader: async ({ params, search }) => {
-    const runId = search.runId || (typeof window !== "undefined" ? window.localStorage.getItem("aria.run_id") : null);
+  loaderDeps: ({ search }) => ({
+    runId: search.runId,
+  }),
+  loader: async ({ params, deps }) => {
+    const runId = deps.runId || (typeof window !== "undefined" ? window.localStorage.getItem("aria.run_id") : null);
     if (!runId) throw notFound();
 
     const { getWorkflowJobs, explainJobMatch } = await import("@/lib/api");

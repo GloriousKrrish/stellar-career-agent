@@ -30,3 +30,23 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+.vercel
+
+# Local environment files
+.env
+.env.local
+.env.*
+stellar-backend/.env
+
+# Database and uploads
+stellar-backend/stellar.db
+stellar-backend/uploads/
+
+# Python cache and search debugs
+__pycache__/
+*.pyc
+stellar-backend/__pycache__/
+stellar-backend/agents/__pycache__/
+stellar-backend/naukri_markdown.txt
+stellar-backend/scratch_request.json
+stellar-backend/simulate_search.py

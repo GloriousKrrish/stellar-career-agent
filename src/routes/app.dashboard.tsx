@@ -1,12 +1,13 @@
 "use client";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Briefcase, Send, MessageCircle, TrendingUp, ArrowUpRight } from "lucide-react";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { PageHeader } from "@/components/shell/sidebar";
 import { AnimatedCounter } from "@/components/motion/counter";
 import { Stagger, StaggerItem, HoverLift } from "@/components/motion/primitives";
-import { METRICS, GROWTH } from "@/lib/mock/metrics";
-import { USER } from "@/lib/mock/user";
+import { api } from "@/lib/api";
+import { getCurrentUser } from "@/lib/auth";
+import { useEffect, useState } from "react";
 import { AGENTS } from "@/lib/mock/agents";
 
 export const Route = createFileRoute("/app/dashboard")({
@@ -19,14 +20,7 @@ export const Route = createFileRoute("/app/dashboard")({
   component: Dashboard,
 });
 
-const cards = [
-  { label: "Jobs found", value: METRICS.jobsDiscovered, delta: "+12% this week", icon: Briefcase },
-  { label: "Applications sent", value: METRICS.applicationsSubmitted, delta: "+8 today", icon: Send },
-  { label: "Interviews", value: METRICS.interviewsGenerated, delta: "+3 scheduled", icon: MessageCircle },
-  { label: "Response rate", value: METRICS.responseRate, suffix: "%", delta: "+4 pts MoM", icon: TrendingUp },
-];
-
-function MetricCard({ label, value, delta, icon: Icon, suffix }: { label: string; value: number; delta: string; icon: typeof Briefcase; suffix?: string }) {
+function MetricCard({ label, value, delta, icon: Icon, suffix }: { label: string; value: number; delta: string; icon: any; suffix?: string }) {
   return (
     <HoverLift>
       <div className="rounded-2xl border border-border bg-card p-5 shadow-soft hover:shadow-elegant transition-shadow">
@@ -75,13 +69,105 @@ function RadialProgress({ value, label }: { value: number; label: string }) {
 }
 
 function Dashboard() {
+  const navigate = useNavigate();
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [workflows, setWorkflows] = useState<any[]>([]);
+  const [applications, setApplications] = useState<any[]>([]);
+  const [agents, setAgents] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // 1. Get local user
+    const localUser = getCurrentUser();
+    if (localUser) {
+      setCurrentUser(localUser);
+    }
+
+    async function loadAllData() {
+      try {
+        const user = await api.getMe();
+        setCurrentUser(user);
+      } catch (err) {
+        console.error("Failed to load user info:", err);
+      }
+
+      try {
+        const res = await api.getWorkflows();
+        setWorkflows(res.workflows || []);
+      } catch (err) {
+        console.error("Failed to load workflows:", err);
+      }
+
+      try {
+        const res = await api.getApplications();
+        setApplications(res.applications || []);
+      } catch (err) {
+        console.error("Failed to load applications:", err);
+      }
+
+      try {
+        const res = await api.getAgentStatus();
+        setAgents(res.agents || []);
+      } catch (err) {
+        console.error("Failed to load agents status:", err);
+      }
+
+      setLoading(false);
+    }
+
+    loadAllData();
+  }, []);
+
+  // Compute metrics
+  const jobsFound = workflows.reduce((sum, w) => sum + (w.jobs_found || 0), 0);
+  const applicationsSent = applications.length;
+  const interviewsCount = applications.filter((a) => a.stage === "interview").length;
+  
+  const activeApps = applications.filter((a) => a.stage !== "saved");
+  const respondedApps = applications.filter((a) =>
+    ["assessment", "interview", "offer", "rejected"].includes(a.stage)
+  );
+  const responseRate = activeApps.length > 0 ? Math.round((respondedApps.length / activeApps.length) * 100) : 0;
+
+  // Weekdays chart
+  const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const growthData = weekdays.map((day) => {
+    const count = applications.filter((app) => {
+      if (!app.updatedAt) return false;
+      const date = new Date(app.updatedAt);
+      return weekdays[date.getDay()] === day;
+    }).length;
+    return { day, applications: count };
+  });
+
+  const cards = [
+    { label: "Jobs found", value: jobsFound, delta: workflows.length > 0 ? `+${workflows.length} searches` : "0 active searches", icon: Briefcase },
+    { label: "Applications sent", value: applicationsSent, delta: `Total tracked`, icon: Send },
+    { label: "Interviews", value: interviewsCount, delta: `${interviewsCount} scheduled`, icon: MessageCircle },
+    { label: "Response rate", value: responseRate, suffix: "%", delta: activeApps.length > 0 ? `${respondedApps.length} of ${activeApps.length} active` : "No applications", icon: TrendingUp },
+  ];
+
+  const displayAgents = agents.length > 0 ? agents : AGENTS.map(a => ({
+    agent_id: a.id,
+    name: a.name,
+    status: a.status,
+    recent_actions: a.recentActions,
+    tasks_today: a.tasksToday,
+  }));
+
+  const activeAgentsCount = displayAgents.filter(a => a.status === "active" || a.status === "thinking").length;
+  const firstName = currentUser?.name?.split(" ")[0] || "User";
+
   return (
     <>
       <PageHeader
-        title={`Welcome back, ${USER.name.split(" ")[0]}.`}
-        subtitle="Your agents discovered 312 new roles overnight."
+        title={`Welcome back, ${firstName}.`}
+        subtitle={workflows.length > 0 ? `Your agents discovered ${jobsFound} roles from your last search.` : "No active searches. Start a new search to discover roles."}
         actions={
-          <button className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90">
+          <button
+            onClick={() => navigate({ to: "/app/onboarding" })}
+            className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90 cursor-pointer"
+          >
             New search
           </button>
         }
@@ -109,42 +195,52 @@ function Dashboard() {
             </div>
           </div>
           <div className="h-64 -mx-3">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={GROWTH} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="a" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="oklch(0.62 0.07 55)" stopOpacity={0.5} />
-                    <stop offset="100%" stopColor="oklch(0.62 0.07 55)" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="oklch(0.91 0.012 75)" vertical={false} />
-                <XAxis dataKey="day" stroke="oklch(0.5 0.012 60)" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis stroke="oklch(0.5 0.012 60)" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={{ background: "oklch(1 0 0)", border: "1px solid oklch(0.91 0.012 75)", borderRadius: 12, fontSize: 12 }} />
-                <Area type="monotone" dataKey="applications" stroke="oklch(0.62 0.07 55)" strokeWidth={2} fill="url(#a)" />
-              </AreaChart>
-            </ResponsiveContainer>
+            {applicationsSent === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-muted-foreground text-sm p-4">
+                <Send className="h-8 w-8 mb-2 opacity-40 text-accent" />
+                <p>No applications logged yet.</p>
+                <p className="text-xs text-muted-foreground/80 mt-1">Once you apply to jobs, your weekly progress will appear here.</p>
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={growthData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="a" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="oklch(0.62 0.07 55)" stopOpacity={0.5} />
+                      <stop offset="100%" stopColor="oklch(0.62 0.07 55)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="oklch(0.91 0.012 75)" vertical={false} />
+                  <XAxis dataKey="day" stroke="oklch(0.5 0.012 60)" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <YAxis stroke="oklch(0.5 0.012 60)" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={{ background: "oklch(1 0 0)", border: "1px solid oklch(0.91 0.012 75)", borderRadius: 12, fontSize: 12 }} />
+                  <Area type="monotone" dataKey="applications" stroke="oklch(0.62 0.07 55)" strokeWidth={2} fill="url(#a)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
 
-        <RadialProgress value={METRICS.responseRate} label="Response rate" />
+        <RadialProgress value={responseRate} label="Response rate" />
       </div>
 
       <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="rounded-2xl border border-border bg-card p-6 shadow-soft">
           <div className="flex items-center justify-between mb-4">
             <div className="font-display text-lg">Agents at work</div>
-            <span className="text-xs text-accent">4 active</span>
+            <span className="text-xs text-accent">{activeAgentsCount} active</span>
           </div>
           <div className="space-y-3">
-            {AGENTS.slice(0, 4).map((a) => (
-              <div key={a.id} className="flex items-center gap-3 py-2">
-                <span className={`h-2 w-2 rounded-full ${a.status === "active" ? "bg-accent" : a.status === "thinking" ? "bg-secondary" : "bg-muted"}`} />
+            {displayAgents.slice(0, 4).map((a: any) => (
+              <div key={a.agent_id} className="flex items-center gap-3 py-2">
+                <span className={`h-2 w-2 rounded-full ${a.status === "active" ? "bg-accent animate-pulse" : a.status === "thinking" ? "bg-secondary animate-pulse" : "bg-muted"}`} />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{a.name}</div>
-                  <div className="text-xs text-muted-foreground truncate">{a.recentActions[0]?.text}</div>
+                  <div className="text-xs text-muted-foreground truncate">
+                    {a.recent_actions?.[0]?.text || a.recentActions?.[0]?.text || (a.status === "active" ? "Working..." : "Idle")}
+                  </div>
                 </div>
-                <div className="text-xs text-muted-foreground tabular-nums">{a.tasksToday}</div>
+                <div className="text-xs text-muted-foreground tabular-nums">{a.tasks_today ?? a.tasksToday ?? 0}</div>
               </div>
             ))}
           </div>
@@ -156,14 +252,18 @@ function Dashboard() {
           <div className="text-xs uppercase tracking-[0.14em] text-background/60">This week</div>
           <div className="font-display text-2xl mt-2 max-w-sm">You're trending toward your highest week ever.</div>
           <div className="mt-6 flex items-end gap-1 h-24">
-            {[40, 55, 38, 70, 58, 82, 95].map((v, i) => (
-              <div key={i} className="flex-1 rounded-md bg-background/15 relative overflow-hidden">
-                <div className="absolute bottom-0 inset-x-0 bg-accent transition-all" style={{ height: `${v}%` }} />
-              </div>
-            ))}
+            {growthData.map((d, i) => {
+              const maxCount = Math.max(...growthData.map(gd => gd.applications), 1);
+              const heightPct = Math.max(10, (d.applications / maxCount) * 100);
+              return (
+                <div key={i} className="flex-1 rounded-md bg-background/15 relative overflow-hidden h-full">
+                  <div className="absolute bottom-0 inset-x-0 bg-accent transition-all" style={{ height: `${heightPct}%` }} />
+                </div>
+              );
+            })}
           </div>
           <div className="mt-3 grid grid-cols-7 gap-1 text-[10px] text-background/50 text-center">
-            {["M","T","W","T","F","S","S"].map((d, i) => <div key={i}>{d}</div>)}
+            {["S","M","T","W","T","F","S"].map((d, i) => <div key={i}>{d}</div>)}
           </div>
         </div>
       </div>

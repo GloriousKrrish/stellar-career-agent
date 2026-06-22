@@ -20,6 +20,8 @@ export type Job = {
   benefits: string[];
   skills: string[];
   saved?: boolean;
+  url?: string;
+  source?: string;
 };
 
 export type ApplicationStage =

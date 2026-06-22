@@ -41,7 +41,7 @@ Candidate Profile:
 class CareerProfilerAgent:
     def __init__(self):
         genai.configure(api_key=settings.gemini_api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
         log.info("CareerProfilerAgent initialised")
 
     def _safe_parse(self, text: str) -> dict[str, Any]:

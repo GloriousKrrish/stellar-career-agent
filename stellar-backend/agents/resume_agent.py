@@ -139,7 +139,7 @@ class ResumeIntelligenceAgent:
 
     def __init__(self):
         genai.configure(api_key=settings.gemini_api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
         log.info("ResumeIntelligenceAgent initialised")
 
     def _call_gemini(self, prompt: str) -> str:

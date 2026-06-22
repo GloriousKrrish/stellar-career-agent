@@ -1,9 +1,10 @@
 "use client";
 import { createFileRoute } from "@tanstack/react-router";
 import { Sparkles, Copy, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { PageHeader } from "@/components/shell/sidebar";
 import { JOBS } from "@/lib/mock/jobs";
+import { getCurrentUser } from "@/lib/auth";
 
 export const Route = createFileRoute("/app/cover-letters")({
   head: () => ({
@@ -15,23 +16,38 @@ export const Route = createFileRoute("/app/cover-letters")({
   component: CoverPage,
 });
 
-const SAMPLE = (company: string, role: string) => `Dear ${company} team,
+const SAMPLE = (company: string, role: string, name: string, location: string) => `Dear ${company} team,
 
 I've spent the last six years building product surfaces that millions of people use every day — and what I keep returning to is that the work I'm most proud of looks a lot like what you're building.
 
 The ${role} role is exciting to me because you've struck a rare balance: real craft, real velocity, and a team small enough to feel every decision. I'd love to bring the same energy I poured into shipping our last platform redesign — same restraint, same care for typography, same insistence that the boring screens deserve as much love as the marquee ones.
 
-I'm based in San Francisco, available on three weeks' notice, and would welcome a conversation whenever it suits you.
+I'm based in ${location || "India"}, available on three weeks' notice, and would welcome a conversation whenever it suits you.
 
 Warmly,
-Alex Morgan`;
+${name}`;
 
 function CoverPage() {
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  useEffect(() => {
+    setCurrentUser(getCurrentUser());
+  }, []);
+
+  const name = currentUser?.name || "Candidate";
+  const location = currentUser?.location || "India";
+
   const [jobId, setJobId] = useState(JOBS[0].id);
   const job = JOBS.find((j) => j.id === jobId)!;
-  const [text, setText] = useState(SAMPLE(job.company, job.title));
+  const [text, setText] = useState("");
 
-  const regenerate = () => setText(SAMPLE(job.company, job.title) + "\n\nPS: I'd love to talk about how I'd approach the first 30 days.");
+  useEffect(() => {
+    if (job) {
+      setText(SAMPLE(job.company, job.title, name, location));
+    }
+  }, [jobId, currentUser]);
+
+  const regenerate = () => setText(SAMPLE(job.company, job.title, name, location) + "\n\nPS: I'd love to talk about how I'd approach the first 30 days.");
 
   return (
     <>
@@ -43,7 +59,7 @@ function CoverPage() {
           {JOBS.slice(0, 6).map((j) => (
             <button
               key={j.id}
-              onClick={() => { setJobId(j.id); setText(SAMPLE(j.company, j.title)); }}
+              onClick={() => { setJobId(j.id); }}
               className={`w-full text-left rounded-xl p-3 transition-colors ${j.id === jobId ? "bg-card border border-border shadow-soft" : "hover:bg-muted/60"}`}
             >
               <div className="flex items-center gap-2">
@@ -87,3 +103,4 @@ function CoverPage() {
     </>
   );
 }
+

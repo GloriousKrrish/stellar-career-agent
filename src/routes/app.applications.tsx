@@ -10,10 +10,10 @@ import {
   useSensors,
   type DragEndEvent,
 } from "@dnd-kit/core";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { PageHeader } from "@/components/shell/sidebar";
-import { APPLICATIONS } from "@/lib/mock/applications";
+import { api } from "@/lib/api";
 import type { Application, ApplicationStage } from "@/lib/types";
 
 export const Route = createFileRoute("/app/applications")({
@@ -42,8 +42,8 @@ function Card({ app }: { app: Application }) {
       ref={setNodeRef}
       {...attributes}
       {...listeners}
-      style={{ opacity: isDragging ? 0 : 1 }}
-      className="rounded-xl border border-border bg-card p-3 shadow-soft hover:shadow-elegant transition-shadow cursor-grab active:cursor-grabbing"
+      style={{ opacity: isDragging ? 0.3 : 1 }}
+      className="rounded-xl border border-border bg-card p-3 shadow-soft hover:shadow-elegant transition-shadow cursor-grab active:cursor-grabbing select-none"
     >
       <div className="flex items-start gap-2.5">
         <div className="h-8 w-8 rounded-lg bg-foreground text-background flex items-center justify-center font-display text-sm flex-shrink-0">
@@ -55,7 +55,7 @@ function Card({ app }: { app: Application }) {
         </div>
       </div>
       <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
-        <span>{app.location}</span>
+        <span>{app.location || "Remote"}</span>
         <span>{app.updatedAt}</span>
       </div>
     </div>
@@ -65,7 +65,7 @@ function Card({ app }: { app: Application }) {
 function Column({ stage, items }: { stage: typeof STAGES[number]; items: Application[] }) {
   const { setNodeRef, isOver } = useDroppable({ id: stage.id });
   return (
-    <div className="flex flex-col min-w-[260px] w-[260px] flex-shrink-0">
+    <div className="flex flex-col min-w-[260px] w-[260px] flex-shrink-0 select-none">
       <div className="flex items-center justify-between mb-3 px-1">
         <div className="flex items-center gap-2">
           <span className="font-display text-sm">{stage.label}</span>
@@ -74,12 +74,12 @@ function Column({ stage, items }: { stage: typeof STAGES[number]; items: Applica
       </div>
       <div
         ref={setNodeRef}
-        className={`flex-1 rounded-2xl border border-dashed p-2 space-y-2 min-h-[200px] transition-colors ${
+        className={`flex-1 rounded-2xl border border-dashed p-2 space-y-2 min-h-[400px] transition-colors ${
           isOver ? "border-accent bg-accent/5" : "border-border bg-muted/30"
         }`}
       >
         {items.map((a) => (
-          <motion.div key={a.id} layout transition={{ duration: 0.3 }}>
+          <motion.div key={a.id} layout transition={{ duration: 0.2 }}>
             <Card app={a} />
           </motion.div>
         ))}
@@ -92,17 +92,71 @@ function Column({ stage, items }: { stage: typeof STAGES[number]; items: Applica
 }
 
 function ApplicationsPage() {
-  const [apps, setApps] = useState(APPLICATIONS);
+  const [apps, setApps] = useState<Application[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
-  const onEnd = (e: DragEndEvent) => {
+  const loadApps = async () => {
+    try {
+      const res = await api.getApplications();
+      const mapped = (res.applications || []).map((app: any) => ({
+        id: app.id,
+        jobId: app.job_id || app.id,
+        title: app.title,
+        company: app.company,
+        companyLogo: app.company_logo || app.company?.[0]?.toUpperCase() || "?",
+        stage: app.stage as ApplicationStage,
+        updatedAt: app.updated_at ? new Date(app.updated_at).toLocaleDateString() : "",
+        salary: app.salary || "",
+        location: app.location || "",
+      }));
+      setApps(mapped);
+    } catch (err) {
+      console.error("Failed to load applications:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadApps();
+  }, []);
+
+  const onEnd = async (e: DragEndEvent) => {
     setActiveId(null);
     const overId = e.over?.id;
     if (!overId) return;
+
+    const targetApp = apps.find((a) => a.id === e.active.id);
+    if (!targetApp) return;
+
+    const newStage = overId as ApplicationStage;
+    if (targetApp.stage === newStage) return;
+
+    // 1. Optimistic Update
     setApps((prev) =>
-      prev.map((a) => (a.id === e.active.id ? { ...a, stage: overId as ApplicationStage } : a)),
+      prev.map((a) => (a.id === e.active.id ? { ...a, stage: newStage, updatedAt: new Date().toLocaleDateString() } : a))
     );
+
+    // 2. Persist to Backend
+    try {
+      await api.createApplication({
+        job_id: targetApp.jobId || targetApp.id,
+        title: targetApp.title,
+        company: targetApp.company,
+        company_logo: targetApp.companyLogo,
+        stage: newStage,
+        location: targetApp.location,
+        salary: targetApp.salary,
+      });
+    } catch (err) {
+      console.error("Failed to update application stage on backend:", err);
+      // Revert on failure
+      setApps((prev) =>
+        prev.map((a) => (a.id === e.active.id ? { ...a, stage: targetApp.stage } : a))
+      );
+    }
   };
 
   const active = apps.find((a) => a.id === activeId);
@@ -110,20 +164,27 @@ function ApplicationsPage() {
   return (
     <>
       <PageHeader title="Applications" subtitle="Drag cards across columns to update stage." />
-      <DndContext sensors={sensors} onDragStart={(e) => setActiveId(String(e.active.id))} onDragEnd={onEnd} onDragCancel={() => setActiveId(null)}>
-        <div className="flex gap-4 overflow-x-auto pb-4 -mx-2 px-2">
-          {STAGES.map((s) => (
-            <Column key={s.id} stage={s} items={apps.filter((a) => a.stage === s.id)} />
-          ))}
+      
+      {loading ? (
+        <div className="flex items-center justify-center py-20 text-muted-foreground text-sm">
+          Loading applications tracker...
         </div>
-        <DragOverlay>
-          {active && (
-            <div className="rotate-2">
-              <Card app={active} />
-            </div>
-          )}
-        </DragOverlay>
-      </DndContext>
+      ) : (
+        <DndContext sensors={sensors} onDragStart={(e) => setActiveId(String(e.active.id))} onDragEnd={onEnd} onDragCancel={() => setActiveId(null)}>
+          <div className="flex gap-4 overflow-x-auto pb-4 -mx-2 px-2 select-none">
+            {STAGES.map((s) => (
+              <Column key={s.id} stage={s} items={apps.filter((a) => a.stage === s.id)} />
+            ))}
+          </div>
+          <DragOverlay>
+            {active && (
+              <div className="rotate-2">
+                <Card app={active} />
+              </div>
+            )}
+          </DragOverlay>
+        </DndContext>
+      )}
     </>
   );
 }

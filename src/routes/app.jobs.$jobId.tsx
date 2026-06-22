@@ -6,10 +6,54 @@ import { useState } from "react";
 import { getJob } from "@/lib/mock/jobs";
 import type { Job } from "@/lib/types";
 import { USER } from "@/lib/mock/user";
+import { getCurrentUser } from "@/lib/auth";
+import { api } from "@/lib/api";
 import { ApplyDialog } from "@/components/apply/apply-dialog";
 
 export const Route = createFileRoute("/app/jobs/$jobId")({
-  loader: ({ params }) => {
+  loader: async ({ params }) => {
+    try {
+      const res = await api.getWorkflows();
+      for (const w of res.workflows || []) {
+        try {
+          const jobsRes = await api.getWorkflowJobs(w.run_id, 100);
+          const found = jobsRes.jobs?.find((j: any) => j.id === params.jobId);
+          if (found) {
+            return {
+              job: {
+                id: found.id,
+                title: found.title,
+                company: found.company,
+                companyLogo: found.company_logo || found.company?.[0]?.toUpperCase() || "?",
+                location: found.location || "Remote",
+                remote: found.remote || "Remote",
+                salary: found.salary || "Undisclosed",
+                salaryMin: found.salary_min || 0,
+                salaryMax: found.salary_max || 0,
+                experience: found.experience || "Mid",
+                industry: found.industry || "Technology",
+                postedAt: found.posted_at || "Just now",
+                match: found.overall_match || 0,
+                aiRecommendation: found.ai_recommendation || "High skill compatibility.",
+                description: found.description || "",
+                responsibilities: found.responsibilities || [],
+                requirements: found.requirements || [],
+                niceToHave: found.nice_to_have || [],
+                benefits: found.benefits || [],
+                skills: found.skills || [],
+                url: found.url || "",
+                source: found.source || "Unknown",
+              } as Job
+            };
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+
     const job = getJob(params.jobId);
     if (!job) throw notFound();
     return { job };
@@ -31,8 +75,27 @@ export const Route = createFileRoute("/app/jobs/$jobId")({
 
 function JobDetail() {
   const { job } = Route.useLoaderData() as { job: Job };
-  const userSet = new Set(USER.skills.map((s) => s.toLowerCase()));
+  const user = getCurrentUser() || USER;
+  const userSet = new Set((user.skills || []).map((s: string) => s.toLowerCase()));
   const [applyOpen, setApplyOpen] = useState(false);
+
+  const handleAddToApplications = async () => {
+    try {
+      await api.createApplication({
+        job_id: job.id,
+        title: job.title,
+        company: job.company,
+        company_logo: job.companyLogo,
+        stage: "saved",
+        location: job.location,
+        salary: job.salary,
+        url: job.url,
+      });
+      alert(`Saved ${job.title} at ${job.company} to applications tracker.`);
+    } catch (err) {
+      console.error("Failed to add job to applications:", err);
+    }
+  };
 
   return (
     <>
@@ -43,11 +106,11 @@ function JobDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-8">
         <article className="space-y-8">
           <header className="flex items-start gap-5">
-            <div className="h-16 w-16 rounded-2xl bg-foreground text-background flex items-center justify-center font-display text-2xl">
+            <div className="h-16 w-16 rounded-2xl bg-foreground text-background flex items-center justify-center font-display text-2xl select-none">
               {job.companyLogo}
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-sm text-muted-foreground">{job.company}</div>
+              <div className="text-sm text-muted-foreground">{job.company} {job.source && `· Source: ${job.source}`}</div>
               <h1 className="font-display text-3xl tracking-tight mt-0.5">{job.title}</h1>
               <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
                 <span className="inline-flex items-center gap-1"><MapPin className="h-3 w-3" />{job.location}</span>
@@ -57,60 +120,78 @@ function JobDetail() {
               </div>
             </div>
             <div className="flex flex-col gap-2">
-              <button onClick={() => setApplyOpen(true)} className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90">Apply via Aria</button>
+              <button onClick={() => setApplyOpen(true)} className="rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90 cursor-pointer">Apply via Aria</button>
+              {job.url && (
+                <a
+                  href={job.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-full bg-accent text-accent-foreground text-center px-4 py-2 text-sm font-medium hover:opacity-90 cursor-pointer"
+                >
+                  Apply Directly
+                </a>
+              )}
               <div className="flex gap-2 justify-end">
-                <button className="h-8 w-8 inline-flex items-center justify-center rounded-full border border-border hover:bg-muted"><BookmarkPlus className="h-4 w-4" /></button>
-                <button className="h-8 w-8 inline-flex items-center justify-center rounded-full border border-border hover:bg-muted"><Share2 className="h-4 w-4" /></button>
+                <button onClick={handleAddToApplications} className="h-8 w-8 inline-flex items-center justify-center rounded-full border border-border hover:bg-muted cursor-pointer"><BookmarkPlus className="h-4 w-4" /></button>
+                <button className="h-8 w-8 inline-flex items-center justify-center rounded-full border border-border hover:bg-muted cursor-pointer"><Share2 className="h-4 w-4" /></button>
               </div>
             </div>
           </header>
 
           <section>
             <h2 className="font-display text-xl mb-3">About the role</h2>
-            <p className="text-foreground/80 leading-relaxed">{job.description}</p>
+            <p className="text-foreground/80 leading-relaxed">{job.description || "No description provided."}</p>
           </section>
 
-          <section>
-            <h2 className="font-display text-xl mb-3">Responsibilities</h2>
-            <ul className="space-y-2 text-sm">
-              {job.responsibilities.map((r) => (
-                <li key={r} className="flex items-start gap-3">
-                  <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-accent flex-shrink-0" /> {r}
-                </li>
-              ))}
-            </ul>
-          </section>
+          {job.responsibilities && job.responsibilities.length > 0 && (
+            <section>
+              <h2 className="font-display text-xl mb-3">Responsibilities</h2>
+              <ul className="space-y-2 text-sm">
+                {job.responsibilities.map((r) => (
+                  <li key={r} className="flex items-start gap-3">
+                    <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-accent flex-shrink-0" /> {r}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
 
-          <section>
-            <h2 className="font-display text-xl mb-3">Requirements</h2>
-            <ul className="space-y-2 text-sm">
-              {job.requirements.map((r) => (
-                <li key={r} className="flex items-start gap-3">
-                  <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-foreground flex-shrink-0" /> {r}
-                </li>
-              ))}
-            </ul>
-          </section>
+          {job.requirements && job.requirements.length > 0 && (
+            <section>
+              <h2 className="font-display text-xl mb-3">Requirements</h2>
+              <ul className="space-y-2 text-sm">
+                {job.requirements.map((r) => (
+                  <li key={r} className="flex items-start gap-3">
+                    <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-foreground flex-shrink-0" /> {r}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
 
-          <section>
-            <h2 className="font-display text-xl mb-3">Nice to have</h2>
-            <ul className="space-y-2 text-sm text-muted-foreground">
-              {job.niceToHave.map((r) => (
-                <li key={r} className="flex items-start gap-3">
-                  <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-secondary flex-shrink-0" /> {r}
-                </li>
-              ))}
-            </ul>
-          </section>
+          {job.niceToHave && job.niceToHave.length > 0 && (
+            <section>
+              <h2 className="font-display text-xl mb-3">Nice to have</h2>
+              <ul className="space-y-2 text-sm text-muted-foreground">
+                {job.niceToHave.map((r) => (
+                  <li key={r} className="flex items-start gap-3">
+                    <span className="mt-1.5 h-1.5 w-1.5 rounded-full bg-secondary flex-shrink-0" /> {r}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
 
-          <section>
-            <h2 className="font-display text-xl mb-3">Benefits</h2>
-            <div className="flex flex-wrap gap-2">
-              {job.benefits.map((b) => (
-                <span key={b} className="text-xs px-3 py-1.5 rounded-full bg-muted">{b}</span>
-              ))}
-            </div>
-          </section>
+          {job.benefits && job.benefits.length > 0 && (
+            <section>
+              <h2 className="font-display text-xl mb-3">Benefits</h2>
+              <div className="flex flex-wrap gap-2">
+                {job.benefits.map((b) => (
+                  <span key={b} className="text-xs px-3 py-1.5 rounded-full bg-muted">{b}</span>
+                ))}
+              </div>
+            </section>
+          )}
         </article>
 
         <aside className="space-y-4 lg:sticky lg:top-24 self-start">
@@ -135,37 +216,39 @@ function JobDetail() {
             </div>
           </div>
 
-          <div className="rounded-2xl border border-border bg-card p-6 shadow-soft">
-            <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground mb-4">Skills comparison</div>
-            <div className="space-y-3">
-              {job.skills.map((s, i) => {
-                const have = userSet.has(s.toLowerCase());
-                return (
-                  <div key={s}>
-                    <div className="flex justify-between text-xs mb-1">
-                      <span>{s}</span>
-                      <span className={have ? "text-accent" : "text-muted-foreground"}>
-                        {have ? "You have this" : "Worth adding"}
-                      </span>
+          {job.skills && job.skills.length > 0 && (
+            <div className="rounded-2xl border border-border bg-card p-6 shadow-soft">
+              <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground mb-4">Skills comparison</div>
+              <div className="space-y-3">
+                {job.skills.map((s, i) => {
+                  const have = userSet.has(s.toLowerCase());
+                  return (
+                    <div key={s}>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span>{s}</span>
+                        <span className={have ? "text-accent" : "text-muted-foreground"}>
+                          {have ? "You have this" : "Worth adding"}
+                        </span>
+                      </div>
+                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: have ? "92%" : "32%" }}
+                          transition={{ duration: 1, delay: i * 0.05, ease: [0.22, 1, 0.36, 1] }}
+                          className={`h-full ${have ? "bg-accent" : "bg-secondary"}`}
+                        />
+                      </div>
                     </div>
-                    <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                      <motion.div
-                        initial={{ width: 0 }}
-                        animate={{ width: have ? "92%" : "32%" }}
-                        transition={{ duration: 1, delay: i * 0.05, ease: [0.22, 1, 0.36, 1] }}
-                        className={`h-full ${have ? "bg-accent" : "bg-secondary"}`}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="rounded-2xl border border-border bg-card p-6 shadow-soft">
             <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground mb-3">Salary insight</div>
             <div className="font-display text-2xl">{job.salary}</div>
-            <p className="text-xs text-muted-foreground mt-1">12% above market for similar roles in {job.location}.</p>
+            <p className="text-xs text-muted-foreground mt-1">Reflects estimated market comp in {job.location || "this region"}.</p>
             <div className="mt-4 h-2 rounded-full bg-muted relative">
               <div className="absolute inset-y-0 left-[20%] right-[15%] rounded-full bg-accent/30" />
               <div className="absolute top-1/2 left-[45%] -translate-y-1/2 h-3 w-3 rounded-full bg-foreground border-2 border-background" />
@@ -176,7 +259,7 @@ function JobDetail() {
             <div className="flex items-center gap-2 text-xs uppercase tracking-[0.14em] text-muted-foreground mb-3">
               <Building2 className="h-3.5 w-3.5" /> {job.company}
             </div>
-            <p className="text-sm text-foreground/80">{job.company} is a leader in {job.industry.toLowerCase()}, headquartered in {job.location}. Known for craft and a high bar.</p>
+            <p className="text-sm text-foreground/80">{job.company} is an active employer in {job.industry?.toLowerCase() || "this field"}, offering roles in {job.location || "various locations"}.</p>
           </div>
         </aside>
       </div>

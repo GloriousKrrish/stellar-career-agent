@@ -1,10 +1,11 @@
 "use client";
 import { createFileRoute } from "@tanstack/react-router";
 import { Upload, FileText, CheckCircle2, Download } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { PageHeader } from "@/components/shell/sidebar";
-import { USER } from "@/lib/mock/user";
+import { getCurrentUser } from "@/lib/auth";
+import { api } from "@/lib/api";
 import { exportResumeReport } from "@/lib/pdf/resume-report";
 
 export const Route = createFileRoute("/app/resume")({
@@ -48,14 +49,67 @@ function Ring({ value, size = 120, label, sub }: { value: number; size?: number;
 function ResumePage() {
   const [phase, setPhase] = useState<"idle" | "parsing" | "done">("idle");
   const [step, setStep] = useState(0);
+  const [resumeName, setResumeName] = useState<string>("");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [userProfile, setUserProfile] = useState<any>(null);
 
-  const handleUpload = () => {
+  useEffect(() => {
+    // Load initial user details if they have already uploaded a resume before
+    const currentUser = getCurrentUser();
+    if (currentUser && currentUser.resumeScore) {
+      setUserProfile(currentUser);
+      setPhase("done");
+    }
+  }, []);
+
+  const handleUpload = async (file: File) => {
+    setResumeName(file.name);
     setPhase("parsing");
     setStep(0);
-    steps.forEach((_, i) => {
-      setTimeout(() => setStep(i + 1), 600 * (i + 1));
-    });
-    setTimeout(() => setPhase("done"), 600 * steps.length + 400);
+    setErrorMsg(null);
+
+    // Visual steps interval
+    const interval = setInterval(() => {
+      setStep((prev) => Math.min(steps.length - 1, prev + 1));
+    }, 4500 / steps.length);
+
+    try {
+      const res = await api.uploadResume(file, false);
+      clearInterval(interval);
+      setStep(steps.length);
+
+      const localUser = getCurrentUser() || {};
+      const updatedProfile = {
+        ...localUser,
+        name: res.profile?.name || localUser.name || "User",
+        title: res.profile?.summary || localUser.title || "Software Specialist",
+        email: res.profile?.email || localUser.email || "",
+        location: res.profile?.location || localUser.location || "Remote",
+        resumeScore: res.profile?.resume_score ?? 80,
+        atsScore: res.profile?.ats_score ?? 85,
+        skills: res.profile?.skills || [],
+        missingSkills: res.profile?.missing_skills || [],
+        improvements: res.profile?.improvements || [],
+      };
+      
+      localStorage.setItem("aria.user", JSON.stringify(updatedProfile));
+      setUserProfile(updatedProfile);
+
+      setTimeout(() => {
+        setPhase("done");
+      }, 500);
+    } catch (err: any) {
+      clearInterval(interval);
+      setPhase("idle");
+      setErrorMsg(err.message || "Failed to upload and analyze resume.");
+      console.error(err);
+    }
+  };
+
+  const handleExportPDF = () => {
+    if (userProfile) {
+      exportResumeReport(userProfile);
+    }
   };
 
   return (
@@ -64,10 +118,10 @@ function ResumePage() {
         title="Resume Analyzer"
         subtitle="Upload your resume. Aria does the rest."
         actions={
-          phase === "done" ? (
+          phase === "done" && userProfile ? (
             <button
-              onClick={exportResumeReport}
-              className="inline-flex items-center gap-1.5 rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90"
+              onClick={handleExportPDF}
+              className="inline-flex items-center gap-1.5 rounded-full bg-foreground text-background px-4 py-2 text-sm font-medium hover:opacity-90 cursor-pointer"
             >
               <Download className="h-3.5 w-3.5" /> Export PDF report
             </button>
@@ -75,18 +129,34 @@ function ResumePage() {
         }
       />
 
+      {errorMsg && (
+        <div className="mb-4 p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+          {errorMsg}
+        </div>
+      )}
+
       <AnimatePresence mode="wait">
         {phase === "idle" && (
           <motion.div key="idle" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
-            <div onClick={handleUpload}
-              className="cursor-pointer rounded-3xl border-2 border-dashed border-border bg-card hover:border-accent hover:bg-muted/40 transition-colors p-16 text-center">
+            <label className="block cursor-pointer rounded-3xl border-2 border-dashed border-border bg-card hover:border-accent hover:bg-muted/40 transition-colors p-16 text-center">
+              <input
+                type="file"
+                accept=".pdf,.docx,.txt"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleUpload(file);
+                }}
+              />
               <div className="mx-auto h-14 w-14 rounded-2xl bg-muted flex items-center justify-center">
                 <Upload className="h-6 w-6 text-accent" />
               </div>
               <div className="mt-5 font-display text-xl">Drop your resume here</div>
               <p className="mt-1 text-sm text-muted-foreground">PDF, DOCX or TXT · up to 5MB</p>
-              <button className="mt-6 rounded-full bg-foreground text-background px-5 py-2 text-sm">Browse files</button>
-            </div>
+              <span className="mt-6 inline-block rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium hover:opacity-90">
+                Browse files
+              </span>
+            </label>
           </motion.div>
         )}
 
@@ -97,7 +167,7 @@ function ResumePage() {
                 <FileText className="h-5 w-5 text-accent" />
               </div>
               <div>
-                <div className="font-display text-lg">alex_morgan_resume.pdf</div>
+                <div className="font-display text-lg truncate max-w-md">{resumeName}</div>
                 <div className="text-xs text-muted-foreground">Aria is reading carefully...</div>
               </div>
             </div>
@@ -108,54 +178,65 @@ function ResumePage() {
                     {i < step ? <CheckCircle2 className="h-3 w-3" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}
                   </div>
                   <span className={i < step ? "text-foreground" : "text-muted-foreground"}>{s}</span>
-                  {i === step - 1 && phase === "parsing" && i === steps.length - 1 ? null : null}
                 </div>
               ))}
             </div>
           </motion.div>
         )}
 
-        {phase === "done" && (
+        {phase === "done" && userProfile && (
           <motion.div key="done" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.5 }} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="rounded-2xl border border-border bg-card p-6 shadow-soft">
                 <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground mb-4">Resume strength</div>
-                <Ring value={USER.resumeScore} label="Strong" sub="Top 15% in your field" />
+                <Ring value={userProfile.resumeScore} label="Strong" sub="Top 15% in your field" />
               </div>
               <div className="rounded-2xl border border-border bg-card p-6 shadow-soft">
                 <div className="text-xs uppercase tracking-[0.14em] text-muted-foreground mb-4">ATS compatibility</div>
-                <Ring value={USER.atsScore} label="Excellent" sub="Will parse cleanly everywhere" />
+                <Ring value={userProfile.atsScore} label="Excellent" sub="Will parse cleanly everywhere" />
               </div>
             </div>
 
             <div className="rounded-2xl border border-border bg-card p-6 shadow-soft">
               <div className="font-display text-lg mb-1">Skills detected</div>
-              <p className="text-xs text-muted-foreground mb-4">Aria found {USER.skills.length} skills in your resume.</p>
+              <p className="text-xs text-muted-foreground mb-4">Aria found {userProfile.skills?.length || 0} skills in your resume.</p>
               <div className="flex flex-wrap gap-1.5">
-                {USER.skills.map((s) => (
+                {userProfile.skills?.map((s: string) => (
                   <span key={s} className="text-xs px-2.5 py-1 rounded-full bg-muted">{s}</span>
-                ))}
+                )) || <div className="text-xs text-muted-foreground">No skills detected.</div>}
               </div>
             </div>
 
-            <div className="rounded-2xl border border-border bg-card p-6 shadow-soft">
-              <div className="font-display text-lg mb-1">Skills that would unlock more roles</div>
-              <p className="text-xs text-muted-foreground mb-4">Adding any of these would surface 40+ additional matches.</p>
-              <div className="flex flex-wrap gap-1.5">
-                {USER.missingSkills.map((s) => (
-                  <span key={s} className="text-xs px-2.5 py-1 rounded-full border border-dashed border-accent text-accent">+ {s}</span>
-                ))}
+            {userProfile.missingSkills && userProfile.missingSkills.length > 0 && (
+              <div className="rounded-2xl border border-border bg-card p-6 shadow-soft">
+                <div className="font-display text-lg mb-1">Skills that would unlock more roles</div>
+                <p className="text-xs text-muted-foreground mb-4">Adding any of these would surface additional matches.</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {userProfile.missingSkills.map((s: string) => (
+                    <span key={s} className="text-xs px-2.5 py-1 rounded-full border border-dashed border-accent text-accent">+ {s}</span>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="rounded-2xl bg-foreground text-background p-6">
-              <div className="font-display text-lg">3 quick wins to push you above 90</div>
+              <div className="font-display text-lg">Actionable wins to push your score higher</div>
               <ul className="mt-3 space-y-2 text-sm text-background/80">
-                <li>· Quantify impact in your last two roles (revenue, latency, NPS).</li>
-                <li>· Move the skills section above experience for ATS visibility.</li>
-                <li>· Replace "responsible for" phrasing with action verbs.</li>
+                {userProfile.improvements && userProfile.improvements.length > 0 ? (
+                  userProfile.improvements.map((imp: string, i: number) => (
+                    <li key={i}>· {imp}</li>
+                  ))
+                ) : (
+                  <>
+                    <li>· Quantify impact in your last two roles (revenue, latency, NPS).</li>
+                    <li>· Move the skills section above experience for ATS visibility.</li>
+                    <li>· Replace "responsible for" phrasing with action verbs.</li>
+                  </>
+                )}
               </ul>
-              <button onClick={() => setPhase("idle")} className="mt-5 rounded-full bg-background/10 hover:bg-background/20 text-sm px-4 py-2">Upload another</button>
+              <button onClick={() => setPhase("idle")} className="mt-5 rounded-full bg-background/10 hover:bg-background/20 text-sm px-4 py-2 cursor-pointer">
+                Upload another
+              </button>
             </div>
           </motion.div>
         )}

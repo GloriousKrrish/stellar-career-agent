@@ -2,9 +2,9 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useState } from "react";
 import { Sparkles } from "lucide-react";
-import { ACTIVITY } from "@/lib/mock/agents";
 import type { ActivityEvent } from "@/lib/types";
 import { ActivityDetailDialog } from "@/components/activity/activity-detail-dialog";
+import { API_BASE_URL } from "@/lib/api";
 
 const kindStyles: Record<ActivityEvent["kind"], string> = {
   discover: "bg-secondary text-secondary-foreground",
@@ -14,21 +14,96 @@ const kindStyles: Record<ActivityEvent["kind"], string> = {
   info: "bg-muted text-muted-foreground",
 };
 
-export function ActivityStream({ open }: { open: boolean }) {
-  const [events, setEvents] = useState(ACTIVITY);
-  const [active, setActive] = useState<ActivityEvent | null>(null);
+const mapEventKind = (agent: string, eventType: string): ActivityEvent["kind"] => {
+  const ag = agent.toLowerCase();
+  const ev = eventType.toLowerCase();
+  if (ag.includes("discovery") || ag.includes("market") || ev.includes("found")) return "discover";
+  if (ag.includes("scoring") || ev.includes("scored") || ev.includes("match")) return "match";
+  if (ag.includes("apply") || ag.includes("application")) return "apply";
+  if (ag.includes("coach") || ag.includes("interview") || ag.includes("tracking")) return "interview";
+  return "info";
+};
 
-  // Simulate live events
+export function ActivityStream({ open }: { open: boolean }) {
+  const [events, setEvents] = useState<ActivityEvent[]>([]);
+  const [active, setActive] = useState<ActivityEvent | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+
   useEffect(() => {
-    const id = setInterval(() => {
-      setEvents((prev) => {
-        const next = [...prev];
-        const ev = { ...next[next.length - 1], id: `live-${Date.now()}`, time: "Just now" };
-        return [{ ...ev, agent: ["Discovery", "Matching", "Auto Apply", "Tracking"][Math.floor(Math.random() * 4)] }, ...next].slice(0, 14);
-      });
-    }, 8000);
-    return () => clearInterval(id);
+    if (typeof window === "undefined") return;
+    const runId = localStorage.getItem("aria.active_run_id");
+    setActiveRunId(runId);
+
+    const handleRunStarted = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      setActiveRunId(customEvent.detail);
+    };
+
+    window.addEventListener("aria:run_started", handleRunStarted);
+    return () => {
+      window.removeEventListener("aria:run_started", handleRunStarted);
+    };
   }, []);
+
+  useEffect(() => {
+    if (!activeRunId) {
+      setEvents([]);
+      return;
+    }
+
+    const wsBase = API_BASE_URL ? API_BASE_URL.replace(/^http/, "ws") : "ws://localhost:8000";
+    const socket = new WebSocket(`${wsBase}/ws/${activeRunId}`);
+
+    socket.onopen = () => {
+      console.log("WebSocket connected to run:", activeRunId);
+      setEvents([
+        {
+          id: "conn-start",
+          agent: "Orchestrator",
+          text: "Connected to career agent. Standing by...",
+          time: "Just now",
+          kind: "info",
+        },
+      ]);
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const raw = JSON.parse(event.data);
+        const mapped: ActivityEvent = {
+          id: raw.id || `ws-${Date.now()}-${Math.random()}`,
+          agent: raw.agent || "Orchestrator",
+          text: raw.message || "",
+          time: "Just now",
+          kind: mapEventKind(raw.agent || "", raw.event_type || ""),
+        };
+        
+        setEvents((prev) => {
+          if (prev.some(p => p.text === mapped.text)) return prev;
+          return [mapped, ...prev].slice(0, 20);
+        });
+
+        if (raw.event_type === "completed" || raw.event_type === "error") {
+          localStorage.removeItem("aria.active_run_id");
+          setTimeout(() => setActiveRunId(null), 5000);
+        }
+      } catch (err) {
+        console.error("Failed to parse WebSocket message:", err);
+      }
+    };
+
+    socket.onerror = (err) => {
+      console.error("WebSocket error:", err);
+    };
+
+    socket.onclose = () => {
+      console.log("WebSocket connection closed");
+    };
+
+    return () => {
+      socket.close();
+    };
+  }, [activeRunId]);
 
   return (
     <AnimatePresence>
@@ -47,10 +122,10 @@ export function ActivityStream({ open }: { open: boolean }) {
             </div>
             <span className="inline-flex items-center gap-1.5 text-xs text-accent">
               <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full rounded-full bg-accent pulse-ring" />
+                <span className={`absolute inline-flex h-full w-full rounded-full bg-accent ${activeRunId ? "pulse-ring" : ""}`} />
                 <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
               </span>
-              Live
+              {activeRunId ? "Running" : "Idle"}
             </span>
           </div>
 
@@ -76,6 +151,13 @@ export function ActivityStream({ open }: { open: boolean }) {
                 </motion.button>
               ))}
             </AnimatePresence>
+            {events.length === 0 && (
+              <div className="h-full flex flex-col items-center justify-center text-center text-muted-foreground text-xs p-6 pt-24">
+                <Sparkles className="h-8 w-8 mb-3 opacity-30 text-accent" />
+                <p className="font-medium text-foreground">Feed is quiet</p>
+                <p className="mt-1">Agents are standing by. Launch a search or upload a resume to see real-time updates.</p>
+              </div>
+            )}
           </div>
 
           <div className="border-t border-border p-4">
@@ -85,7 +167,7 @@ export function ActivityStream({ open }: { open: boolean }) {
                 Ask Aria
               </div>
               <p className="mt-2 text-sm">Try: "Why did the OpenAI role match so well?"</p>
-              <button className="mt-3 w-full rounded-lg bg-background/10 hover:bg-background/20 transition py-2 text-xs">Open chat</button>
+              <button className="mt-3 w-full rounded-lg bg-background/10 hover:bg-background/20 transition py-2 text-xs cursor-pointer">Open chat</button>
             </div>
           </div>
         </motion.aside>

@@ -3,7 +3,8 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Sparkles, Upload, FileText, CheckCircle2, ArrowRight, ArrowLeft, Loader2, Rocket } from "lucide-react";
-import { completeOnboarding } from "@/lib/auth";
+import { completeOnboarding, getCurrentUser } from "@/lib/auth";
+import { api } from "@/lib/api";
 
 export const Route = createFileRoute("/app/onboarding")({
   head: () => ({
@@ -39,6 +40,8 @@ function OnboardingWizard() {
   const [parsing, setParsing] = useState(false);
   const [parseStep, setParseStep] = useState(0);
   const [parsed, setParsed] = useState(false);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Preferences state
   const [roles, setRoles] = useState<string[]>(["Product Engineer"]);
@@ -49,13 +52,59 @@ function OnboardingWizard() {
   // Launch state
   const [launching, setLaunching] = useState(false);
 
-  const handleFile = (name = "alex_morgan_resume.pdf") => {
-    setResumeName(name);
+  const handleUpload = async (file: File) => {
+    setResumeName(file.name);
     setParsing(true);
     setParseStep(0);
     setParsed(false);
-    PARSE_STEPS.forEach((_, i) => setTimeout(() => setParseStep(i + 1), 500 * (i + 1)));
-    setTimeout(() => { setParsing(false); setParsed(true); }, 500 * PARSE_STEPS.length + 300);
+    setErrorMsg(null);
+
+    // Increment visual steps progressively
+    const interval = setInterval(() => {
+      setParseStep((prev) => Math.min(PARSE_STEPS.length - 1, prev + 1));
+    }, 4500 / PARSE_STEPS.length);
+
+    try {
+      const res = await api.uploadResume(file, false);
+      clearInterval(interval);
+      setParseStep(PARSE_STEPS.length); // mark all completed
+      setRunId(res.run_id);
+      
+      // Update local storage user details if returned
+      if (res.profile) {
+        const localUser = getCurrentUser() || {};
+        const updated = {
+          ...localUser,
+          name: res.profile.name || localUser.name || "User",
+          skills: res.profile.skills || [],
+          missingSkills: res.profile.missing_skills || [],
+          resumeScore: res.profile.resume_score || 80,
+          atsScore: res.profile.ats_score || 85,
+        };
+        localStorage.setItem("aria.user", JSON.stringify(updated));
+        
+        // Optionally suggest parsed roles if matches found in ROLES
+        if (res.profile.skills && res.profile.skills.length > 0) {
+          const matchedRoles = ROLES.filter(r => 
+            res.profile.skills.some((s: string) => s.toLowerCase().includes(r.toLowerCase()))
+          );
+          if (matchedRoles.length > 0) {
+            setRoles(matchedRoles);
+          }
+        }
+      }
+      
+      setTimeout(() => {
+        setParsing(false);
+        setParsed(true);
+      }, 500);
+    } catch (err: any) {
+      clearInterval(interval);
+      setParsing(false);
+      setResumeName(null);
+      setErrorMsg(err.message || "Failed to upload and parse resume.");
+      console.error(err);
+    }
   };
 
   const toggle = (arr: string[], v: string, setter: (a: string[]) => void) =>
@@ -64,12 +113,28 @@ function OnboardingWizard() {
   const next = () => setStepIdx((i) => Math.min(STEPS.length - 1, i + 1));
   const back = () => setStepIdx((i) => Math.max(0, i - 1));
 
-  const launch = () => {
+  const launch = async () => {
     setLaunching(true);
-    setTimeout(() => {
+    try {
+      const primaryRole = roles[0] || "Software Engineer";
+      const primaryLocation = locations[0] || "Remote";
+      const res = await api.startWorkflow(primaryRole, primaryLocation, runId || undefined);
+      
+      const finalRunId = res.run_id || runId;
+      if (finalRunId) {
+        localStorage.setItem("aria.active_run_id", finalRunId);
+        window.dispatchEvent(new CustomEvent("aria:run_started", { detail: finalRunId }));
+      }
       completeOnboarding();
       navigate({ to: "/app/jobs" });
-    }, 1800);
+    } catch (err) {
+      console.error("Failed to start workflow:", err);
+      // fallback
+      completeOnboarding();
+      navigate({ to: "/app/jobs" });
+    } finally {
+      setLaunching(false);
+    }
   };
 
   const canAdvance = (() => {
@@ -133,17 +198,29 @@ function OnboardingWizard() {
                 <h2 className="font-display text-2xl">Upload your resume</h2>
                 <p className="text-sm text-muted-foreground mt-1">PDF, DOCX or TXT · up to 5MB. Aria parses it locally.</p>
 
+                {errorMsg && (
+                  <div className="mt-4 p-3 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-xs">
+                    {errorMsg}
+                  </div>
+                )}
+
                 {!resumeName && (
-                  <div
-                    onClick={() => handleFile()}
-                    className="mt-6 cursor-pointer rounded-3xl border-2 border-dashed border-border bg-card hover:border-accent hover:bg-muted/40 transition-colors p-12 text-center"
-                  >
+                  <label className="mt-6 block cursor-pointer rounded-3xl border-2 border-dashed border-border bg-card hover:border-accent hover:bg-muted/40 transition-colors p-12 text-center">
+                    <input
+                      type="file"
+                      accept=".pdf,.docx,.txt"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) handleUpload(file);
+                      }}
+                    />
                     <div className="mx-auto h-12 w-12 rounded-2xl bg-muted flex items-center justify-center">
                       <Upload className="h-5 w-5 text-accent" />
                     </div>
                     <div className="mt-4 font-display text-lg">Drop your resume here</div>
                     <p className="mt-1 text-xs text-muted-foreground">or click to browse</p>
-                  </div>
+                  </label>
                 )}
 
                 {resumeName && (
@@ -159,7 +236,7 @@ function OnboardingWizard() {
                         </div>
                       </div>
                       {parsed && (
-                        <button onClick={() => { setResumeName(null); setParsed(false); }} className="text-xs text-muted-foreground hover:text-foreground">
+                        <button onClick={() => { setResumeName(null); setParsed(false); setRunId(null); }} className="text-xs text-muted-foreground hover:text-foreground">
                           Replace
                         </button>
                       )}
@@ -255,13 +332,13 @@ function OnboardingWizard() {
           <button
             onClick={back}
             disabled={stepIdx === 0 || launching}
-            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground disabled:opacity-30"
+            className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground disabled:opacity-30 cursor-pointer"
           >
             <ArrowLeft className="h-3.5 w-3.5" /> Back
           </button>
           <button
             onClick={() => { completeOnboarding(); navigate({ to: "/app/dashboard" }); }}
-            className="text-xs text-muted-foreground hover:text-foreground"
+            className="text-xs text-muted-foreground hover:text-foreground cursor-pointer"
           >
             Skip for now
           </button>
@@ -269,7 +346,7 @@ function OnboardingWizard() {
             <button
               onClick={next}
               disabled={!canAdvance}
-              className="inline-flex items-center gap-1.5 rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium disabled:opacity-40 hover:opacity-90"
+              className="inline-flex items-center gap-1.5 rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium disabled:opacity-40 hover:opacity-90 cursor-pointer"
             >
               Continue <ArrowRight className="h-3.5 w-3.5" />
             </button>
@@ -277,7 +354,7 @@ function OnboardingWizard() {
             <button
               onClick={launch}
               disabled={launching}
-              className="inline-flex items-center gap-1.5 rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium disabled:opacity-60 hover:opacity-90"
+              className="inline-flex items-center gap-1.5 rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium disabled:opacity-60 hover:opacity-90 cursor-pointer"
             >
               {launching ? "Launching..." : "Launch first search"} <Rocket className="h-3.5 w-3.5" />
             </button>
@@ -302,7 +379,7 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
     <button
       type="button"
       onClick={onClick}
-      className={`text-xs px-3 py-1.5 rounded-full border transition ${
+      className={`text-xs px-3 py-1.5 rounded-full border transition cursor-pointer ${
         active ? "border-foreground bg-foreground text-background" : "border-border bg-card text-foreground hover:bg-muted"
       }`}
     >

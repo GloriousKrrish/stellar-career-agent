@@ -1,11 +1,11 @@
 "use client";
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
 import { LayoutDashboard, Search, Bot, Briefcase, FileText, Mail, MessageSquare, LineChart, Settings, LogOut, ChevronsLeft, ChevronsRight, Command } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Logo } from "@/components/brand/logo";
-import { signOut } from "@/lib/auth";
-import { USER } from "@/lib/mock/user";
+import { signOut, getCurrentUser } from "@/lib/auth";
+
 
 const items = [
   { to: "/app/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -30,6 +30,16 @@ export function Sidebar({
 }) {
   const path = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
+
+  const [currentUser, setCurrentUser] = useState<any>(null);
+
+  useEffect(() => {
+    setCurrentUser(getCurrentUser());
+  }, []);
+
+  const initials = currentUser?.name
+    ? currentUser.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)
+    : "?";
 
   return (
     <aside
@@ -90,12 +100,12 @@ export function Sidebar({
       <div className="px-3 pb-3 border-t border-sidebar-border pt-3">
         <div className={`flex items-center gap-3 rounded-xl px-2 py-2 ${collapsed ? "justify-center" : ""}`}>
           <div className="h-8 w-8 rounded-full bg-foreground text-background flex items-center justify-center text-xs font-display">
-            {USER.initials}
+            {initials}
           </div>
           {!collapsed && (
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium truncate">{USER.name}</div>
-              <div className="text-xs text-muted-foreground truncate">{USER.email}</div>
+              <div className="text-sm font-medium truncate">{currentUser?.name || "Guest User"}</div>
+              <div className="text-xs text-muted-foreground truncate">{currentUser?.email || "Not logged in"}</div>
             </div>
           )}
           {!collapsed && (

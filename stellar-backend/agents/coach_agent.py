@@ -53,7 +53,7 @@ Be specific with resource recommendations (courses, projects, certifications).
 class CareerCoachAgent:
     def __init__(self):
         genai.configure(api_key=settings.gemini_api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
         log.info("CareerCoachAgent initialised")
 
     def _build_context(

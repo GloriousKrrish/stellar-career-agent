@@ -270,6 +270,7 @@ async def start_workflow(
     background_tasks: BackgroundTasks,
     request: StartWorkflowRequest,
     run_id: str | None = None,
+    current_user: dict[str, Any] | None = Depends(get_current_user_optional),
 ):
     """
     Start (or restart) the full agentic workflow.
@@ -284,11 +285,31 @@ async def start_workflow(
         run_id = str(uuid.uuid4())
 
     if not user_profile:
-        user_profile = UserProfile(
-            name="Job Seeker",
-            summary=f"Looking for {request.role} roles",
-            skills=[request.role] if request.role else [],
-        )
+        if current_user:
+            import db
+            db_user = db.db_get_user(current_user["id"])
+            if db_user:
+                user_profile = UserProfile(
+                    id=db_user["id"],
+                    name=db_user["name"],
+                    email=db_user["email"],
+                    location=db_user.get("location", ""),
+                    skills=db_user.get("skills", []) or [],
+                    resume_score=db_user.get("resume_score", 0),
+                    ats_score=db_user.get("ats_score", 0),
+                )
+        if not user_profile:
+            user_profile = UserProfile(
+                name=current_user["name"] if current_user else "Job Seeker",
+                email=current_user["email"] if current_user else "",
+                summary=f"Looking for {request.role} roles",
+                skills=[request.role] if request.role else [],
+            )
+
+    if current_user:
+        user_profile.id = current_user["id"]
+        user_profile.name = current_user["name"]
+        user_profile.email = current_user["email"]
 
     from models import WorkflowState
     state = WorkflowState(run_id=run_id, user_id=user_profile.id, status="pending")
@@ -626,9 +647,11 @@ async def get_agents_status():
 
 
 @app.get("/api/workflows", tags=["Workflow"])
-async def list_workflows():
+async def list_workflows(current_user: dict[str, Any] | None = Depends(get_current_user_optional)):
     """List all workflow runs."""
     all_states = store.all_workflows()
+    if current_user:
+        all_states = [s for s in all_states if s.user_id == current_user["id"]]
     return {
         "total": len(all_states),
         "workflows": [

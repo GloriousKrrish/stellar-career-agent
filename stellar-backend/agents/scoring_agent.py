@@ -84,7 +84,7 @@ def _skill_overlap(candidate_skills: list[str], job_skills: list[str]) -> float:
 class MatchScoringAgent:
     def __init__(self):
         genai.configure(api_key=settings.gemini_api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
         log.info("MatchScoringAgent initialised")
 
     def _safe_parse(self, text: str) -> dict[str, Any]:

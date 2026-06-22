@@ -100,18 +100,22 @@ export function AuthLayout({
   );
 }
 
+import { api } from "@/lib/api";
+
 export function AuthInput({
   label,
   type = "text",
   placeholder,
   required,
   autoComplete,
+  name,
 }: {
   label: string;
   type?: string;
   placeholder?: string;
   required?: boolean;
   autoComplete?: string;
+  name?: string;
 }) {
   return (
     <label className="block">
@@ -121,17 +125,19 @@ export function AuthInput({
         placeholder={placeholder}
         required={required}
         autoComplete={autoComplete}
+        name={name}
         className="mt-1.5 w-full rounded-xl border border-border bg-card px-4 py-2.5 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition"
       />
     </label>
   );
 }
 
-export function AuthSubmit({ label }: { label: string }) {
+export function AuthSubmit({ label, disabled }: { label: string; disabled?: boolean }) {
   return (
     <button
       type="submit"
-      className="w-full rounded-xl bg-foreground text-background px-4 py-2.5 text-sm font-medium hover:opacity-90 transition"
+      disabled={disabled}
+      className="w-full rounded-xl bg-foreground text-background px-4 py-2.5 text-sm font-medium hover:opacity-90 disabled:opacity-50 transition"
     >
       {label}
     </button>
@@ -141,17 +147,38 @@ export function AuthSubmit({ label }: { label: string }) {
 export function useAuthSubmit(redirectTo: "/app/dashboard" | "/app/onboarding" = "/app/dashboard") {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+
+    const formData = new FormData(e.currentTarget);
+    const email = formData.get("email") as string;
+    const password = formData.get("password") as string;
+    const name = formData.get("name") as string;
+
+    try {
+      if (redirectTo === "/app/onboarding") {
+        await api.register(name || "New User", email, password);
+      } else {
+        await api.login(email, password);
+      }
+      navigate({ to: redirectTo });
+    } catch (err: any) {
+      setError(err.message || "Authentication failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return {
     loading,
-    submit: (e: FormEvent) => {
-      e.preventDefault();
-      setLoading(true);
-      setTimeout(() => {
-        signIn();
-        navigate({ to: redirectTo });
-      }, 700);
-    },
+    error,
+    submit,
   };
 }
 
 export { Link };
+

@@ -58,16 +58,16 @@ export function ActivityStream({ open }: { open: boolean }) {
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        setEvents((prev) => [
-          {
+        setEvents((prev) => {
+          const sysEvent: ActivityEvent = {
             id: `sys-${Date.now()}`,
             agent: "System",
             time: "Just now",
             kind: "info",
             text: "Connected to live agent pipeline stream.",
-          },
-          ...prev,
-        ].slice(0, 14));
+          };
+          return [sysEvent, ...prev].slice(0, 14);
+        });
       };
 
       ws.onmessage = (event) => {

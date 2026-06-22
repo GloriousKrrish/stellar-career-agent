@@ -31,7 +31,7 @@ settings = get_settings()
 class JobDiscoveryAgent:
     def __init__(self):
         genai.configure(api_key=settings.gemini_api_key)
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
         log.info("JobDiscoveryAgent initialised — sources: weworkremotely.com, glassdoor.com")
 
     def _clean_html(self, text: str) -> str:
@@ -325,11 +325,14 @@ class JobDiscoveryAgent:
         if not jobs:
             return jobs
 
+        jobs_data = [{"title": j.title, "company": j.company, "description": j.description[:200]} for j in jobs[:15]]
+        jobs_json = json.dumps(jobs_data, indent=2)
+
         prompt = f"""Analyze these REAL job listings and extract structured data.
 For each job, return skills, experience level, and industry.
 
 Jobs to analyze:
-{json.dumps([{{"title": j.title, "company": j.company, "description": j.description[:200]}} for j in jobs[:15]], indent=2)}
+{jobs_json}
 
 Return ONLY valid JSON array (no markdown):
 [
@@ -369,69 +372,50 @@ Return ONLY valid JSON array (no markdown):
     ) -> list[RawJob]:
         """
         Discover REAL jobs from weworkremotely.com, glassdoor.com, and naukri.com.
-        No AI-generated jobs. Returns empty list if nothing found.
+        Uses resilient multi-provider search (including Firecrawl API).
         """
         query = role or (career.ideal_titles[0] if career.ideal_titles else "engineer")
         log.info(f"Starting REAL job discovery for '{query}' | user={user_profile.name}")
 
-        all_jobs: list[RawJob] = []
+        from job_providers import search_jobs_resilient
 
-        # Search all sources concurrently
-        wwr_task = self._fetch_weworkremotely(query)
-        glassdoor_task = self._fetch_glassdoor(query)
-        naukri_task = self._fetch_naukri(query)
+        loc = user_profile.location or ""
+        salary_target_str = ""
+        if career.salary_min:
+            salary_target_str = f"₹{career.salary_min // 100000} LPA"
 
-        wwr_jobs, glassdoor_jobs, naukri_jobs = await asyncio.gather(
-            wwr_task, glassdoor_task, naukri_task, return_exceptions=True
+        raw_list, provider = await search_jobs_resilient(
+            role=query,
+            location=loc,
+            salary_target=salary_target_str,
+            firecrawl_key=settings.firecrawl_api_key,
+            rapidapi_key="",
         )
 
-        if isinstance(wwr_jobs, list):
-            all_jobs.extend(wwr_jobs)
-            log.info(f"WeWorkRemotely contributed {len(wwr_jobs)} jobs")
-        else:
-            log.error(f"WeWorkRemotely task failed: {wwr_jobs}")
+        all_jobs: list[RawJob] = []
+        for item in raw_list:
+            rem = item.get("remote", "Onsite")
+            if rem not in ["Remote", "Hybrid", "Onsite"]:
+                rem = "Remote" if "remote" in str(item.get("location", "")).lower() else "Onsite"
 
-        if isinstance(glassdoor_jobs, list):
-            all_jobs.extend(glassdoor_jobs)
-            log.info(f"Glassdoor contributed {len(glassdoor_jobs)} jobs")
-        else:
-            log.error(f"Glassdoor task failed: {glassdoor_jobs}")
-
-        if isinstance(naukri_jobs, list):
-            all_jobs.extend(naukri_jobs)
-            log.info(f"Naukri contributed {len(naukri_jobs)} jobs")
-        else:
-            log.error(f"Naukri task failed: {naukri_jobs}")
+            all_jobs.append(RawJob(
+                id=item.get("id") or str(uuid.uuid4()),
+                title=item.get("title", "Unknown"),
+                company=item.get("company", "Unknown"),
+                location=item.get("location") or "See listing",
+                remote=rem,
+                salary=item.get("salary") or "Undisclosed",
+                description=item.get("description") or "No description provided.",
+                skills=item.get("skills") or [],
+                url=item.get("url") or "",
+                source=item.get("source") or "Web",
+                posted_at=item.get("posted_at") or "Recently",
+            ))
 
         # Enrich real jobs with AI-extracted skills (does NOT create fake jobs)
         if all_jobs:
             all_jobs = await self._enrich_jobs_with_ai(all_jobs, career)
 
-        # Deduplicate by title + company
-        seen = set()
-        unique_jobs = []
-        for job in all_jobs:
-            key = f"{job.title.lower()}|{job.company.lower()}"
-            if key not in seen:
-                seen.add(key)
-                unique_jobs.append(job)
+        log.info(f"Total REAL jobs discovered: {len(all_jobs)} from {provider}")
+        return all_jobs[:limit]
 
-        # Priority Order Sort: 1. WeWorkRemotely, 2. GlassDoor, 3. Naukri
-        def get_source_priority(job_item: RawJob) -> int:
-            src = job_item.source.lower()
-            if "weworkremotely" in src:
-                return 1
-            elif "glassdoor" in src:
-                return 2
-            elif "naukri" in src:
-                return 3
-            return 4
-
-        unique_jobs.sort(key=get_source_priority)
-
-        log.info(f"Total REAL jobs discovered and prioritized: {len(unique_jobs)} (from {len(all_jobs)} raw)")
-
-        if not unique_jobs:
-            log.info("No jobs found from any source. Returning empty list.")
-
-        return unique_jobs[:limit]

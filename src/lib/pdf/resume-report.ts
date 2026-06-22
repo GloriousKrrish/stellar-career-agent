@@ -6,7 +6,7 @@ const ACCENT = { r: 166, g: 124, b: 82 };
 const INK = { r: 31, g: 31, b: 31 };
 const MUTED = { r: 107, g: 107, b: 107 };
 
-export function exportResumeReport() {
+export function exportResumeReport(user: any = USER) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
@@ -36,37 +36,37 @@ export function exportResumeReport() {
   doc.setFont("helvetica", "bold");
   doc.setFontSize(13);
   doc.setTextColor(INK.r, INK.g, INK.b);
-  doc.text(USER.name, M + 18, y + 26);
+  doc.text(user.name || "Job Seeker", M + 18, y + 26);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
   doc.setTextColor(MUTED.r, MUTED.g, MUTED.b);
-  doc.text(`${USER.title} · ${USER.location}`, M + 18, y + 44);
-  doc.text(USER.email, M + 18, y + 58);
+  doc.text(`${user.title || "Software Specialist"} · ${user.location || "Remote"}`, M + 18, y + 44);
+  doc.text(user.email || "", M + 18, y + 58);
   y += 90;
 
   // Scores
   drawSectionLabel(doc, "Scores", M, y);
   y += 22;
-  drawScoreCard(doc, M, y, (W - M * 2 - 16) / 2, "Resume strength", USER.resumeScore, "Top 15% in your field");
-  drawScoreCard(doc, M + (W - M * 2 - 16) / 2 + 16, y, (W - M * 2 - 16) / 2, "ATS compatibility", USER.atsScore, "Parses cleanly across major systems");
+  drawScoreCard(doc, M, y, (W - M * 2 - 16) / 2, "Resume strength", user.resumeScore ?? 80, "Top 15% in your field");
+  drawScoreCard(doc, M + (W - M * 2 - 16) / 2 + 16, y, (W - M * 2 - 16) / 2, "ATS compatibility", user.atsScore ?? 85, "Parses cleanly across major systems");
   y += 110;
 
   // Skills detected
   drawSectionLabel(doc, "Skills detected", M, y);
   y += 22;
-  y = drawChips(doc, M, y, W - M * 2, USER.skills, false);
+  y = drawChips(doc, M, y, W - M * 2, user.skills || [], false);
   y += 14;
 
   // Missing skills
   drawSectionLabel(doc, "Skills that would unlock more roles", M, y);
   y += 22;
-  y = drawChips(doc, M, y, W - M * 2, USER.missingSkills, true);
+  y = drawChips(doc, M, y, W - M * 2, user.missingSkills || [], true);
   y += 14;
 
   // Recommendations
   drawSectionLabel(doc, "Recommendations", M, y);
   y += 22;
-  const recs = [
+  const recs = user.improvements && user.improvements.length > 0 ? user.improvements : [
     "Quantify impact in your last two roles (revenue, latency, NPS).",
     "Move the skills section above experience for ATS visibility.",
     "Replace passive 'responsible for' phrasing with action verbs.",
@@ -75,7 +75,7 @@ export function exportResumeReport() {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10.5);
   doc.setTextColor(INK.r, INK.g, INK.b);
-  recs.forEach((r) => {
+  recs.forEach((r: string) => {
     if (y > H - 70) { doc.addPage(); y = M; }
     doc.setFillColor(ACCENT.r, ACCENT.g, ACCENT.b);
     doc.circle(M + 4, y - 4, 2.5, "F");
