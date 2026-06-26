@@ -3,13 +3,21 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, Sparkles, Loader2, CheckCircle2, FileText, Mail, User2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Job } from "@/lib/types";
-import { USER } from "@/lib/mock/user";
+import { getCurrentUser } from "@/lib/auth";
 
 type Phase = "drafting" | "ready" | "submitting" | "done";
 
 export function ApplyDialog({ job, onClose }: { job: Job | null; onClose: () => void }) {
   const [phase, setPhase] = useState<Phase>("drafting");
   const [note, setNote] = useState("");
+
+  const user = getCurrentUser() || {
+    name: "Job Seeker",
+    email: "",
+    title: "Software Engineer",
+    location: "Remote",
+    skills: ["TypeScript", "React", "Node"]
+  };
 
   useEffect(() => {
     if (!job) return;
@@ -20,11 +28,11 @@ export function ApplyDialog({ job, onClose }: { job: Job | null; onClose: () => 
   }, [job]);
 
   const summary = job
-    ? `Aria drafted a tailored application for ${job.title} at ${job.company}. We aligned your ${USER.skills.slice(0, 3).join(", ")} experience with their ${job.skills.slice(0, 2).join(" and ")} requirements, and emphasized your work shipping consumer-grade product.`
+    ? `Aria drafted a tailored application for ${job.title} at ${job.company}. We aligned your ${(user.skills || []).slice(0, 3).join(", ") || "software development"} experience with their ${(job.skills || []).slice(0, 2).join(" and ") || "role"} requirements, and emphasized your work shipping consumer-grade product.`
     : "";
 
   const coverPreview = job
-    ? `Hi ${job.company} team,\n\nI'm reaching out for the ${job.title} role. Over the last few years I've shipped ${USER.skills.slice(0, 2).join(" + ")} work at the bar your team seems to demand. Three highlights:\n\n· Led a 0→1 surface that drove measurable retention wins.\n· Partnered cross-functionally with engineering, design and PM weekly.\n· Mentored a small team while staying hands-on in the codebase.\n\nI'd love to talk. — ${USER.name}`
+    ? `Hi ${job.company} team,\n\nI'm reaching out for the ${job.title} role. Over the last few years I've shipped ${(user.skills || []).slice(0, 2).join(" + ") || "software development"} work at the bar your team seems to demand. Three highlights:\n\n· Led a 0→1 surface that drove measurable retention wins.\n· Partnered cross-functionally weekly.\n· Mentored team members while staying hands-on in the codebase.\n\nI'd love to talk. — ${user.name}`
     : "";
 
   const handleSubmit = () => {
@@ -88,13 +96,16 @@ export function ApplyDialog({ job, onClose }: { job: Job | null; onClose: () => 
                   </div>
 
                   <Section icon={<User2 className="h-3.5 w-3.5" />} title="Your profile">
-                    <Row label="Name" value={USER.name} />
-                    <Row label="Email" value={USER.email} />
-                    <Row label="Location" value={USER.location} />
+                    <Row label="Name" value={user.name} />
+                    <Row label="Email" value={user.email} />
+                    <Row label="Location" value={user.location || "Remote"} />
                   </Section>
 
                   <Section icon={<FileText className="h-3.5 w-3.5" />} title="Resume">
-                    <div className="text-sm">alex_morgan_resume.pdf <span className="text-xs text-muted-foreground">· tailored snippet attached</span></div>
+                    <div className="text-sm">
+                      {user.name ? `${user.name.toLowerCase().replace(/\s+/g, '_')}_resume.pdf` : 'resume.pdf'}
+                      <span className="text-xs text-muted-foreground">· tailored snippet attached</span>
+                    </div>
                   </Section>
 
                   <Section icon={<Mail className="h-3.5 w-3.5" />} title="Cover letter preview">

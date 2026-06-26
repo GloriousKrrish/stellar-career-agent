@@ -119,109 +119,58 @@ init_db()
 # ─── User Operations ─────────────────────────────────────────────────────────
 
 def save_user(user_data: dict) -> None:
-    conn = get_db_connection()
-    cursor = get_db_cursor(conn)
-    if IS_POSTGRES:
-        cursor.execute("""
-        INSERT INTO users (
-            id, name, email, password_hash, created_at, title, location, skills,
-            resume_score, ats_score, missing_skills, improvements, run_id, raw_text, keywords
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (id) DO UPDATE SET
-            name = EXCLUDED.name,
-            email = EXCLUDED.email,
-            password_hash = EXCLUDED.password_hash,
-            created_at = EXCLUDED.created_at,
-            title = EXCLUDED.title,
-            location = EXCLUDED.location,
-            skills = EXCLUDED.skills,
-            resume_score = EXCLUDED.resume_score,
-            ats_score = EXCLUDED.ats_score,
-            missing_skills = EXCLUDED.missing_skills,
-            improvements = EXCLUDED.improvements,
-            run_id = EXCLUDED.run_id,
-            raw_text = EXCLUDED.raw_text,
-            keywords = EXCLUDED.keywords
-        """, (
-            user_data["id"],
-            user_data["name"],
-            user_data["email"],
-            user_data["password_hash"],
-            user_data["created_at"],
-            user_data.get("title", ""),
-            user_data.get("location", ""),
-            json.dumps(user_data.get("skills", [])),
-            user_data.get("resume_score", 0),
-            user_data.get("ats_score", 0),
-            json.dumps(user_data.get("missing_skills", [])),
-            json.dumps(user_data.get("improvements", [])),
-            user_data.get("run_id", ""),
-            user_data.get("raw_text", ""),
-            json.dumps(user_data.get("keywords", []))
-        ))
-    else:
-        cursor.execute("""
-        INSERT OR REPLACE INTO users (
-            id, name, email, password_hash, created_at, title, location, skills,
-            resume_score, ats_score, missing_skills, improvements, run_id, raw_text, keywords
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            user_data["id"],
-            user_data["name"],
-            user_data["email"],
-            user_data["password_hash"],
-            user_data["created_at"],
-            user_data.get("title", ""),
-            user_data.get("location", ""),
-            json.dumps(user_data.get("skills", [])),
-            user_data.get("resume_score", 0),
-            user_data.get("ats_score", 0),
-            json.dumps(user_data.get("missing_skills", [])),
-            json.dumps(user_data.get("improvements", [])),
-            user_data.get("run_id", ""),
-            user_data.get("raw_text", ""),
-            json.dumps(user_data.get("keywords", []))
-        ))
-    conn.commit()
-    conn.close()
+    # Map fields for compatibility
+    supabase_data = {
+        "id": user_data["id"],
+        "name": user_data["name"],
+        "email": user_data["email"],
+        "title": user_data.get("title", ""),
+        "location": user_data.get("location", ""),
+        "skills": user_data.get("skills") if isinstance(user_data.get("skills"), list) else [],
+        "resume_score": user_data.get("resume_score", 0),
+        "ats_score": user_data.get("ats_score", 0),
+        "missing_skills": user_data.get("missing_skills") if isinstance(user_data.get("missing_skills"), list) else [],
+        "improvements": user_data.get("improvements") if isinstance(user_data.get("improvements"), list) else [],
+        "run_id": user_data.get("run_id", ""),
+        "raw_text": user_data.get("raw_text", ""),
+        "resume_text": user_data.get("raw_text", ""),
+        "keywords": user_data.get("keywords") if isinstance(user_data.get("keywords"), list) else [],
+        "resume_path": user_data.get("resume_path", ""),
+        "experience": user_data.get("experience") if isinstance(user_data.get("experience"), list) else [],
+        "preferences": user_data.get("preferences") if isinstance(user_data.get("preferences"), dict) else {}
+    }
+    try:
+        from supabase_client import supabase
+        supabase.table("profiles").upsert(supabase_data).execute()
+        log.info(f"User profile saved to Supabase: {user_data['email']}")
+    except Exception as e:
+        log.error(f"Failed to save user profile to Supabase: {e}")
 
 def get_user_by_email(email: str) -> Optional[dict]:
-    conn = get_db_connection()
-    cursor = get_db_cursor(conn)
-    if IS_POSTGRES:
-        cursor.execute("SELECT * FROM users WHERE email = %s", (email.lower().strip(),))
-    else:
-        cursor.execute("SELECT * FROM users WHERE email = ?", (email.lower().strip(),))
-    row = cursor.fetchone()
-    conn.close()
-    if not row:
+    try:
+        from supabase_client import supabase
+        res = supabase.table("profiles").select("*").eq("email", email.lower().strip()).execute()
+        if res.data:
+            profile = res.data[0]
+            profile["raw_text"] = profile.get("resume_text") or profile.get("raw_text") or ""
+            return profile
         return None
-    
-    user_dict = dict(row)
-    user_dict["skills"] = json.loads(user_dict["skills"]) if user_dict["skills"] else []
-    user_dict["missing_skills"] = json.loads(user_dict["missing_skills"]) if user_dict["missing_skills"] else []
-    user_dict["improvements"] = json.loads(user_dict["improvements"]) if user_dict["improvements"] else []
-    user_dict["keywords"] = json.loads(user_dict["keywords"]) if "keywords" in user_dict and user_dict["keywords"] else []
-    return user_dict
+    except Exception as e:
+        log.error(f"Failed to get user by email from Supabase: {e}")
+        return None
 
 def get_user_by_id(user_id: str) -> Optional[dict]:
-    conn = get_db_connection()
-    cursor = get_db_cursor(conn)
-    if IS_POSTGRES:
-        cursor.execute("SELECT * FROM users WHERE id = %s", (user_id,))
-    else:
-        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if not row:
+    try:
+        from supabase_client import supabase
+        res = supabase.table("profiles").select("*").eq("id", user_id).execute()
+        if res.data:
+            profile = res.data[0]
+            profile["raw_text"] = profile.get("resume_text") or profile.get("raw_text") or ""
+            return profile
         return None
-    
-    user_dict = dict(row)
-    user_dict["skills"] = json.loads(user_dict["skills"]) if user_dict["skills"] else []
-    user_dict["missing_skills"] = json.loads(user_dict["missing_skills"]) if user_dict["missing_skills"] else []
-    user_dict["improvements"] = json.loads(user_dict["improvements"]) if user_dict["improvements"] else []
-    user_dict["keywords"] = json.loads(user_dict["keywords"]) if "keywords" in user_dict and user_dict["keywords"] else []
-    return user_dict
+    except Exception as e:
+        log.error(f"Failed to get user by ID from Supabase: {e}")
+        return None
 
 
 # ─── Workflow Operations ─────────────────────────────────────────────────────

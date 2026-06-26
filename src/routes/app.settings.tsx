@@ -4,7 +4,8 @@ import { useState } from "react";
 import { CheckCircle2, Plus } from "lucide-react";
 import { motion } from "framer-motion";
 import { PageHeader } from "@/components/shell/sidebar";
-import { USER, CONNECTIONS } from "@/lib/mock/user";
+import { CONNECTIONS } from "@/lib/mock/user";
+import { getCurrentUser } from "@/lib/auth";
 
 export const Route = createFileRoute("/app/settings")({
   head: () => ({
@@ -31,6 +32,17 @@ function SettingsPage() {
   const [section, setSection] = useState<typeof sections[number]>("Profile");
   const [connections, setConnections] = useState(CONNECTIONS);
 
+  const user = getCurrentUser() || {
+    name: "Job Seeker",
+    email: "",
+    title: "Software Engineer",
+    location: "Remote",
+  };
+
+  const initials = user.name
+    ? user.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)
+    : "JS";
+
   return (
     <>
       <PageHeader title="Settings" subtitle="Aria works the way you want it to." />
@@ -51,18 +63,18 @@ function SettingsPage() {
           {section === "Profile" && (
             <div className="rounded-2xl border border-border bg-card p-6 shadow-soft space-y-5">
               <div className="flex items-center gap-4">
-                <div className="h-16 w-16 rounded-full bg-foreground text-background flex items-center justify-center font-display text-xl">{USER.initials}</div>
+                <div className="h-16 w-16 rounded-full bg-foreground text-background flex items-center justify-center font-display text-xl">{initials}</div>
                 <div>
-                  <div className="font-display text-lg">{USER.name}</div>
-                  <div className="text-xs text-muted-foreground">{USER.title} · {USER.location}</div>
+                  <div className="font-display text-lg">{user.name}</div>
+                  <div className="text-xs text-muted-foreground">{user.title || "Software Engineer"} · {user.location || "Remote"}</div>
                 </div>
                 <button className="ml-auto text-xs rounded-full border border-border px-3 py-1.5 hover:bg-muted">Change photo</button>
               </div>
               <div className="grid sm:grid-cols-2 gap-4">
-                <Field label="Full name" defaultValue={USER.name} />
-                <Field label="Email" defaultValue={USER.email} />
-                <Field label="Title" defaultValue={USER.title} />
-                <Field label="Location" defaultValue={USER.location} />
+                <Field label="Full name" defaultValue={user.name} />
+                <Field label="Email" defaultValue={user.email} />
+                <Field label="Title" defaultValue={user.title || "Software Engineer"} />
+                <Field label="Location" defaultValue={user.location || "Remote"} />
               </div>
             </div>
           )}

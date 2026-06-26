@@ -5,7 +5,6 @@ import { motion } from "framer-motion";
 import { useState } from "react";
 import { getJob } from "@/lib/mock/jobs";
 import type { Job } from "@/lib/types";
-import { USER } from "@/lib/mock/user";
 import { getCurrentUser } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { ApplyDialog } from "@/components/apply/apply-dialog";
@@ -75,7 +74,13 @@ export const Route = createFileRoute("/app/jobs/$jobId")({
 
 function JobDetail() {
   const { job } = Route.useLoaderData() as { job: Job };
-  const user = getCurrentUser() || USER;
+  const user = getCurrentUser() || {
+    name: "Job Seeker",
+    email: "",
+    title: "Software Engineer",
+    location: "Remote",
+    skills: []
+  };
   const userSet = new Set((user.skills || []).map((s: string) => s.toLowerCase()));
   const [applyOpen, setApplyOpen] = useState(false);
 

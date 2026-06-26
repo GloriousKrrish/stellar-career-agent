@@ -50,6 +50,7 @@ from agents.coach_agent import CareerCoachAgent
 from agents.scoring_agent import MatchScoringAgent
 from agents.application_agent import ApplicationAgent
 from fastapi import Header
+import supabase_client
 from auth import RegisterRequest, LoginRequest, register_user, login_user, get_user_by_token
 
 log = get_logger("API")
@@ -287,7 +288,7 @@ async def start_workflow(
     if not user_profile:
         if current_user:
             import db
-            db_user = db.db_get_user(current_user["id"])
+            db_user = db.get_user_by_id(current_user["id"])
             if db_user:
                 user_profile = UserProfile(
                     id=db_user["id"],

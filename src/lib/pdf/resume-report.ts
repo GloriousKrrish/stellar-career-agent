@@ -1,12 +1,11 @@
 import jsPDF from "jspdf";
-import { USER } from "@/lib/mock/user";
 
 const BRAND = { r: 109, g: 76, b: 65 }; // primary
 const ACCENT = { r: 166, g: 124, b: 82 };
 const INK = { r: 31, g: 31, b: 31 };
 const MUTED = { r: 107, g: 107, b: 107 };
 
-export function exportResumeReport(user: any = USER) {
+export function exportResumeReport(user: any) {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();

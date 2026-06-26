@@ -46,6 +46,11 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   });
 
   if (!response.ok) {
+    if (response.status === 401 && typeof window !== "undefined") {
+      clearToken();
+      window.localStorage.removeItem("aria.user");
+      window.location.href = "/auth/login";
+    }
     let errMsg = "API Request failed";
     try {
       const errData = await response.json();

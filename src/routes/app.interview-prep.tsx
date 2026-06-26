@@ -5,6 +5,8 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { PageHeader } from "@/components/shell/sidebar";
 
+import { getCurrentUser } from "@/lib/auth";
+
 export const Route = createFileRoute("/app/interview-prep")({
   head: () => ({
     meta: [
@@ -36,8 +38,10 @@ const QUESTIONS = {
 };
 
 function MockChat() {
+  const user = getCurrentUser();
+  const firstName = user?.name ? user.name.split(" ")[0] : "there";
   const [messages, setMessages] = useState<{ role: "ai" | "you"; text: string }[]>([
-    { role: "ai", text: "Hey Alex. Let's start with: tell me about a recent project you're proud of." },
+    { role: "ai", text: `Hey ${firstName}. Let's start with: tell me about a recent project you're proud of.` },
   ]);
   const [input, setInput] = useState("");
 
