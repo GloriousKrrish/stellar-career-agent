@@ -276,6 +276,7 @@ function JobsPage() {
     if (!searchRole.trim()) return;
 
     setSearchLoading(true);
+    setJobs([]); // Clear stale jobs from previous search
     setWsLogs(["Launching job discovery agents..."]);
     try {
       // Map salary options to integer INR values
@@ -340,7 +341,7 @@ function JobsPage() {
             </div>
           </div>
           <p className="mt-2 text-sm text-foreground/80">
-            Aria is scanning public listings for "{searchRole || "roles"}" matching your parameters. Real-time scores will populate below.
+            Aria is scanning public listings for "<strong>{searchRole}</strong>"{searchLocation ? ` in "${searchLocation}"` : ""} — real-time scores will populate below once crawling completes.
           </p>
           {wsLogs.length > 0 && (
             <div className="mt-3 bg-card/60 rounded-xl p-3 border border-border text-[11px] font-mono text-muted-foreground max-h-[100px] overflow-y-auto space-y-1">
