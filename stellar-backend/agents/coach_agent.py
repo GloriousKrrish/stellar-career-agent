@@ -109,7 +109,7 @@ class CareerCoachAgent:
         messages.append("Aria:")
 
         full_prompt = "\n".join(messages)
-        response = self.model.generate_content(full_prompt)
+        response = await self.model.generate_content_async(full_prompt)
         reply = response.text.strip()
 
         # Generate follow-up suggestions
@@ -165,7 +165,7 @@ class CareerCoachAgent:
             titles=", ".join(career.ideal_titles[:4]),
             seniority=career.seniority_level,
         )
-        response = self.model.generate_content(prompt)
+        response = await self.model.generate_content_async(prompt)
         return response.text.strip()
 
     async def explain_job_match(self, user: UserProfile, job: ScoredJob) -> str:
@@ -180,5 +180,5 @@ Missing skills: {', '.join(job.missing_skills[:5])}
 Write 2-3 paragraphs that are encouraging, honest, and specific.
 Include what they have, what's missing, and concrete next steps.
 """
-        response = self.model.generate_content(prompt)
+        response = await self.model.generate_content_async(prompt)
         return response.text.strip()

@@ -68,20 +68,20 @@ class CareerProfilerAgent:
             "summary": user_profile.summary,
         }
         prompt = PROFILER_PROMPT.format(profile_json=json.dumps(compact, indent=2)[:4000])
-        response = self.model.generate_content(prompt)
+        response = await self.model.generate_content_async(prompt)
         data = self._safe_parse(response.text)
 
         career = CareerProfile(
             user_id=user_profile.id,
-            career_paths=data.get("career_paths", ["Software Engineering"]),
-            ideal_titles=data.get("ideal_titles", ["Software Engineer"]),
-            seniority_level=data.get("seniority_level", "Mid"),
-            industries=data.get("industries", ["Technology"]),
-            salary_min=data.get("salary_min", 800000),
-            salary_max=data.get("salary_max", 1800000),
+            career_paths=data.get("career_paths") or ["Software Engineering"],
+            ideal_titles=data.get("ideal_titles") or ["Software Engineer"],
+            seniority_level=data.get("seniority_level") or "Mid",
+            industries=data.get("industries") or ["Technology"],
+            salary_min=data.get("salary_min") if data.get("salary_min") is not None else 800000,
+            salary_max=data.get("salary_max") if data.get("salary_max") is not None else 1800000,
             salary_currency="INR",
-            strengths=data.get("strengths", []),
-            growth_areas=data.get("growth_areas", []),
+            strengths=data.get("strengths") or [],
+            growth_areas=data.get("growth_areas") or [],
         )
         log.info(f"Career profile complete: {career.ideal_titles[:2]} | {career.seniority_level} | {career.salary_min} - {career.salary_max} INR")
         return career

@@ -17,11 +17,22 @@ import os
 import re
 import uuid
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 import httpx
 from logger import get_logger
 
 log = get_logger("JobProviders")
+
+async def _notify(on_progress: Callable[[str], Any] | None, msg: str):
+    if not on_progress:
+        return
+    try:
+        if asyncio.iscoroutinefunction(on_progress):
+            await on_progress(msg)
+        else:
+            on_progress(msg)
+    except Exception:
+        pass
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Data class (plain dict for simplicity, no Pydantic dep here)
@@ -56,12 +67,14 @@ def make_job(
 # Provider 1: Firecrawl (uses our existing API key)
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def fetch_firecrawl(role: str, location: str, firecrawl_key: str) -> list[dict]:
+async def fetch_firecrawl(role: str, location: str, firecrawl_key: str, on_progress: Callable[[str], Any] | None = None) -> list[dict]:
     """Use Firecrawl's scrape API to extract Naukri job listings cleanly."""
     jobs: list[dict] = []
     if not firecrawl_key:
         log.warning("Firecrawl key missing")
         return jobs
+
+    await _notify(on_progress, "Firecrawl Scraper: Crawling Naukri using Firecrawl API...")
 
     encoded_role = role.replace(" ", "-").lower()
     encoded_loc = location.replace(" ", "-").lower() if location else ""
@@ -114,6 +127,7 @@ async def fetch_firecrawl(role: str, location: str, firecrawl_key: str) -> list[
                 extracted = data.get("data", {}).get("extract", {}) or {}
                 raw_jobs = extracted.get("jobs", []) or []
                 log.info(f"Firecrawl extracted {len(raw_jobs)} jobs")
+                await _notify(on_progress, f"Firecrawl Scraper: Extracted {len(raw_jobs)} Naukri jobs.")
                 for j in raw_jobs[:20]:
                     if not j.get("title"):
                         continue
@@ -128,8 +142,10 @@ async def fetch_firecrawl(role: str, location: str, firecrawl_key: str) -> list[
                     ))
             else:
                 log.warning(f"Firecrawl error: {resp.status_code} — {resp.text[:200]}")
+                await _notify(on_progress, f"Firecrawl Scraper: Failed (HTTP {resp.status_code}).")
     except Exception as e:
         log.error(f"Firecrawl fetch failed: {e}")
+        await _notify(on_progress, "Firecrawl Scraper: Request failed.")
     return jobs
 
 
@@ -137,9 +153,10 @@ async def fetch_firecrawl(role: str, location: str, firecrawl_key: str) -> list[
 # Provider 2: RemoteOK (free, no key, JSON API)
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def fetch_remoteok(role: str) -> list[dict]:
+async def fetch_remoteok(role: str, on_progress: Callable[[str], Any] | None = None) -> list[dict]:
     """RemoteOK free API — returns remote jobs worldwide."""
     jobs: list[dict] = []
+    await _notify(on_progress, "RemoteOK Scraper: Fetching remote jobs via RemoteOK API...")
     role_lower = role.lower()
     # Try multiple tags derived from the role
     tag_map = {
@@ -182,6 +199,7 @@ async def fetch_remoteok(role: str) -> list[dict]:
                 # First element is a legal notice dict, skip it
                 raw_jobs = [x for x in data if isinstance(x, dict) and x.get("position")]
                 log.info(f"RemoteOK found {len(raw_jobs)} jobs for tag={api_tag}")
+                await _notify(on_progress, f"RemoteOK Scraper: Found {len(raw_jobs)} jobs for tag '{api_tag}'.")
                 for j in raw_jobs[:20]:
                     salary_min = j.get("salary_min") or 0
                     salary_max = j.get("salary_max") or 0
@@ -214,9 +232,10 @@ async def fetch_remoteok(role: str) -> list[dict]:
 # Provider 3: Arbeitnow (free, no key, works for remote globally)
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def fetch_arbeitnow(role: str, location: str) -> list[dict]:
+async def fetch_arbeitnow(role: str, location: str, on_progress: Callable[[str], Any] | None = None) -> list[dict]:
     """Arbeitnow free job board API — remote-focused, no key needed."""
     jobs: list[dict] = []
+    await _notify(on_progress, "Arbeitnow Scraper: Fetching remote jobs via Arbeitnow API...")
     try:
         # Build search query
         search = role.replace(" ", "+")
@@ -229,6 +248,7 @@ async def fetch_arbeitnow(role: str, location: str) -> list[dict]:
                 data = resp.json()
                 raw_jobs = data.get("data", [])
                 log.info(f"Arbeitnow found {len(raw_jobs)} jobs")
+                await _notify(on_progress, f"Arbeitnow Scraper: Found {len(raw_jobs)} matching jobs.")
                 for j in raw_jobs[:30]:
                     # Always include remote jobs; also include location matches
                     job_loc = j.get("location", "Remote")
@@ -295,7 +315,7 @@ async def fetch_jsearch(role: str, location: str, rapidapi_key: str) -> list[dic
 # Platform: Naukri & Glassdoor Crawlers (Live scrapers)
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def fetch_naukri(role: str, location: str = "") -> list[dict]:
+async def fetch_naukri(role: str, location: str = "", on_progress: Callable[[str], Any] | None = None) -> list[dict]:
     """Fetch real jobs from Naukri via public search listings."""
     jobs: list[dict] = []
     headers = {
@@ -303,6 +323,7 @@ async def fetch_naukri(role: str, location: str = "") -> list[dict]:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
+    await _notify(on_progress, "Naukri Scraper: Initialising direct browser crawl...")
     try:
         encoded_query = role.replace(" ", "-").lower()
         if location:
@@ -316,6 +337,10 @@ async def fetch_naukri(role: str, location: str = "") -> list[dict]:
             resp = await client.get(url)
             if resp.status_code != 200:
                 log.warning(f"Naukri returned status {resp.status_code}")
+                if resp.status_code == 403:
+                    await _notify(on_progress, "Naukri Scraper: Crawl blocked by bot protection (HTTP 403).")
+                else:
+                    await _notify(on_progress, f"Naukri Scraper: Failed (HTTP {resp.status_code}).")
                 return jobs
 
             html = resp.text
@@ -338,12 +363,14 @@ async def fetch_naukri(role: str, location: str = "") -> list[dict]:
                     source="NAUKRI",
                 ))
         log.info(f"Naukri direct scraper found {len(jobs)} jobs")
+        await _notify(on_progress, f"Naukri Scraper: Extracted {len(jobs)} jobs.")
     except Exception as e:
         log.error(f"Naukri crawl failed: {e}")
+        await _notify(on_progress, "Naukri Scraper: Failed with network error.")
     return jobs
 
 
-async def fetch_glassdoor(role: str, location: str = "") -> list[dict]:
+async def fetch_glassdoor(role: str, location: str = "", on_progress: Callable[[str], Any] | None = None) -> list[dict]:
     """Fetch real jobs from Glassdoor via public search and parsing JSON-LD."""
     jobs: list[dict] = []
     headers = {
@@ -351,6 +378,7 @@ async def fetch_glassdoor(role: str, location: str = "") -> list[dict]:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
+    await _notify(on_progress, "Glassdoor Scraper: Initialising direct browser crawl...")
     try:
         encoded_query = role.replace(" ", "-")
         url = f"https://www.glassdoor.com/Job/{encoded_query}-jobs-SRCH_KO0,{len(encoded_query)}.htm"
@@ -360,6 +388,10 @@ async def fetch_glassdoor(role: str, location: str = "") -> list[dict]:
             resp = await client.get(url)
             if resp.status_code != 200:
                 log.warning(f"Glassdoor returned status {resp.status_code}")
+                if resp.status_code == 403:
+                    await _notify(on_progress, "Glassdoor Scraper: Crawl blocked by bot protection (HTTP 403).")
+                else:
+                    await _notify(on_progress, f"Glassdoor Scraper: Failed (HTTP {resp.status_code}).")
                 return jobs
 
             html = resp.text
@@ -435,8 +467,10 @@ async def fetch_glassdoor(role: str, location: str = "") -> list[dict]:
                         source="GLASSDOOR",
                     ))
         log.info(f"Glassdoor scraper found {len(jobs)} jobs")
+        await _notify(on_progress, f"Glassdoor Scraper: Extracted {len(jobs)} jobs.")
     except Exception as e:
         log.error(f"Glassdoor crawl failed: {e}")
+        await _notify(on_progress, "Glassdoor Scraper: Failed with network error.")
     return jobs
 
 
@@ -488,6 +522,7 @@ async def search_jobs_resilient(
     salary_target: str = "",
     firecrawl_key: str = "",
     rapidapi_key: str = "",
+    on_progress: Callable[[str], Any] | None = None,
 ) -> tuple[list[dict], str]:
     """
     Search Glassdoor, Naukri, RemoteOK, and Arbeitnow. Falls back to high-quality demo
@@ -500,7 +535,7 @@ async def search_jobs_resilient(
     if firecrawl_key:
         try:
             log.info("Trying Naukri via Firecrawl Scraper")
-            fc_jobs = await fetch_firecrawl(role, location, firecrawl_key)
+            fc_jobs = await fetch_firecrawl(role, location, firecrawl_key, on_progress)
             if fc_jobs:
                 all_jobs.extend(fc_jobs)
                 provider_used = "Firecrawl API"
@@ -509,7 +544,7 @@ async def search_jobs_resilient(
 
     # 2. Fetch Naukri via direct scrape (as a backup / additional source)
     try:
-        nk_jobs = await fetch_naukri(role, location)
+        nk_jobs = await fetch_naukri(role, location, on_progress)
         if nk_jobs:
             all_jobs.extend(nk_jobs)
     except Exception as e:
@@ -517,7 +552,7 @@ async def search_jobs_resilient(
 
     # 3. Fetch Glassdoor via direct scrape
     try:
-        gd_jobs = await fetch_glassdoor(role, location)
+        gd_jobs = await fetch_glassdoor(role, location, on_progress)
         if gd_jobs:
             all_jobs.extend(gd_jobs)
     except Exception as e:
@@ -527,7 +562,7 @@ async def search_jobs_resilient(
     if not all_jobs:
         try:
             log.info("Trying RemoteOK API")
-            ro_jobs = await fetch_remoteok(role)
+            ro_jobs = await fetch_remoteok(role, on_progress)
             if ro_jobs:
                 all_jobs.extend(ro_jobs)
                 provider_used = "RemoteOK API"
@@ -538,7 +573,7 @@ async def search_jobs_resilient(
     if not all_jobs:
         try:
             log.info("Trying Arbeitnow API")
-            an_jobs = await fetch_arbeitnow(role, location)
+            an_jobs = await fetch_arbeitnow(role, location, on_progress)
             if an_jobs:
                 all_jobs.extend(an_jobs)
                 provider_used = "Arbeitnow API"
@@ -547,6 +582,7 @@ async def search_jobs_resilient(
 
     # 6. Fallback to high-quality demo jobs if still empty
     if not all_jobs:
+        await _notify(on_progress, "Live crawling returned 0 results. Activating high-quality demo fallback dataset...")
         all_jobs = get_demo_jobs(role, location)
         provider_used = "Demo Fallback Dataset"
 

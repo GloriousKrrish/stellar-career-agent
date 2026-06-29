@@ -72,7 +72,7 @@ class MarketIntelligenceAgent:
             seniority=career_profile.seniority_level,
             industries=", ".join(career_profile.industries),
         )
-        response = self.model.generate_content(prompt)
+        response = await self.model.generate_content_async(prompt)
         data = self._safe_parse(response.text)
 
         report = MarketReport(

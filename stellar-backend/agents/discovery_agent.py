@@ -14,7 +14,7 @@ import json
 import re
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 from html import unescape
 
 import httpx
@@ -345,7 +345,7 @@ Return ONLY valid JSON array (no markdown):
 ]
 """
         try:
-            response = self.model.generate_content(prompt)
+            response = await self.model.generate_content_async(prompt)
             clean = re.sub(r"```(?:json)?", "", response.text).replace("```", "").strip()
             enrichments = json.loads(clean) if clean.startswith("[") else []
 
@@ -369,6 +369,7 @@ Return ONLY valid JSON array (no markdown):
         role: str = "",
         remote_preference: str = "Remote",
         limit: int = 20,
+        on_progress: Callable[[str], Any] | None = None,
     ) -> list[RawJob]:
         """
         Discover REAL jobs from weworkremotely.com, glassdoor.com, and naukri.com.
@@ -390,6 +391,7 @@ Return ONLY valid JSON array (no markdown):
             salary_target=salary_target_str,
             firecrawl_key=settings.firecrawl_api_key,
             rapidapi_key="",
+            on_progress=on_progress,
         )
 
         all_jobs: list[RawJob] = []

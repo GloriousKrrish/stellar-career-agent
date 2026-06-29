@@ -142,9 +142,9 @@ class ResumeIntelligenceAgent:
         self.model = genai.GenerativeModel("gemini-2.5-flash")
         log.info("ResumeIntelligenceAgent initialised")
 
-    def _call_gemini(self, prompt: str) -> str:
+    async def _call_gemini(self, prompt: str) -> str:
         """Call Gemini and return the raw text response."""
-        response = self.model.generate_content(prompt)
+        response = await self.model.generate_content_async(prompt)
         return response.text.strip()
 
     def _safe_parse_json(self, text: str) -> dict[str, Any]:
@@ -253,7 +253,7 @@ class ResumeIntelligenceAgent:
         # Step 1: Parse structured profile
         parse_prompt = PARSE_PROMPT.format(resume_text=raw_text[:8000])
         try:
-            parse_response = self._call_gemini(parse_prompt)
+            parse_response = await self._call_gemini(parse_prompt)
             parsed = self._safe_parse_json(parse_response)
         except Exception as e:
             log.error(f"Gemini parse failed: {e}")
@@ -265,7 +265,7 @@ class ResumeIntelligenceAgent:
         # Step 2: Score and identify gaps
         score_prompt = SCORE_PROMPT.format(profile_json=json.dumps(parsed, indent=2)[:4000])
         try:
-            score_response = self._call_gemini(score_prompt)
+            score_response = await self._call_gemini(score_prompt)
             scored = self._safe_parse_json(score_response)
         except Exception as e:
             log.error(f"Gemini score failed: {e}")

@@ -99,12 +99,16 @@ async def run_full_workflow(
         store.save_workflow(state)
 
         discovery = JobDiscoveryAgent()
+        async def on_discovery_progress(msg: str):
+            await _emit(run_id, "progress", "JobDiscovery", msg)
+
         raw_jobs = await discovery.discover(
             user_profile=user_profile,
             career=career,
             role=request.role,
             remote_preference=request.remote_preference,
             limit=25,
+            on_progress=on_discovery_progress,
         )
         state.raw_jobs = raw_jobs
         state.steps_completed.append("job_discovery")
@@ -204,8 +208,12 @@ async def run_job_search_workflow(
         career.ideal_titles = [role] + career.ideal_titles[:3]
 
         discovery = JobDiscoveryAgent()
+        async def on_discovery_progress(msg: str):
+            await _emit(run_id, "progress", "JobDiscovery", msg)
+
         raw_jobs = await discovery.discover(dummy_profile, career, role=role,
-                                            remote_preference=remote_preference, limit=limit)
+                                            remote_preference=remote_preference, limit=limit,
+                                            on_progress=on_discovery_progress)
 
         await _emit(run_id, "job_found", "JobDiscovery", f"Found {len(raw_jobs)} roles")
 

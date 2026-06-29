@@ -127,7 +127,7 @@ class MatchScoringAgent:
                 job_skills=", ".join(job.skills[:15]),
                 job_experience=job.experience,
             )
-            response = self.model.generate_content(prompt)
+            response = await self.model.generate_content_async(prompt)
             return self._safe_parse(response.text)
         except Exception as e:
             log.warning(f"AI scoring failed for {job.title}: {e}")
@@ -155,30 +155,32 @@ class MatchScoringAgent:
         # Sort by overall_match — best first
         fast_scored.sort(key=lambda x: x[1]["overall_match"], reverse=True)
 
-        # Phase 2: AI deep scoring for top candidates
-        scored_jobs: list[ScoredJob] = []
-        ai_count = 0
+        # Phase 2: AI deep scoring for top candidates in parallel
+        tasks = []
+        ai_jobs = []
         for i, (job, fast_scores) in enumerate(fast_scored):
-            if ai_count < top_n_ai:
-                ai_scores = await self._score_with_ai(user, job, seniority)
-                ai_count += 1
-                # Blend fast + AI scores
-                final_scores = {
-                    "semantic_score": ai_scores.get("semantic_score", fast_scores["semantic_score"]),
-                    "skill_overlap_score": ai_scores.get("skill_overlap_score", fast_scores["skill_overlap_score"]),
-                    "experience_score": ai_scores.get("experience_score", fast_scores["experience_score"]),
-                    "overall_match": ai_scores.get("overall_match", fast_scores["overall_match"]),
-                    "match_reasons": ai_scores.get("match_reasons", []),
-                    "missing_skills": ai_scores.get("missing_skills", []),
-                    "ai_recommendation": ai_scores.get("ai_recommendation", f"Strong fit for {job.title} at {job.company}."),
-                }
-            else:
-                final_scores = {**fast_scores, "match_reasons": [], "missing_skills": [], "ai_recommendation": f"Good potential match for {job.title} at {job.company}."}
+            if i < top_n_ai:
+                tasks.append(self._score_with_ai(user, job, seniority))
+                ai_jobs.append((job, fast_scores))
 
-            # Derive company logo (first letter)
+        # Gather AI scores concurrently
+        ai_results = await asyncio.gather(*tasks) if tasks else []
+
+        scored_jobs: list[ScoredJob] = []
+
+        # Process the AI-scored jobs
+        for (job, fast_scores), ai_scores in zip(ai_jobs, ai_results):
+            final_scores = {
+                "semantic_score": ai_scores.get("semantic_score", fast_scores["semantic_score"]),
+                "skill_overlap_score": ai_scores.get("skill_overlap_score", fast_scores["skill_overlap_score"]),
+                "experience_score": ai_scores.get("experience_score", fast_scores["experience_score"]),
+                "overall_match": ai_scores.get("overall_match", fast_scores["overall_match"]),
+                "match_reasons": ai_scores.get("match_reasons", []),
+                "missing_skills": ai_scores.get("missing_skills", []),
+                "ai_recommendation": ai_scores.get("ai_recommendation", f"Strong fit for {job.title} at {job.company}."),
+            }
             company_logo = job.company[0].upper() if job.company else "?"
-
-            scored_job = ScoredJob(
+            scored_jobs.append(ScoredJob(
                 **job.model_dump(),
                 semantic_score=final_scores["semantic_score"],
                 skill_overlap_score=final_scores["skill_overlap_score"],
@@ -188,8 +190,28 @@ class MatchScoringAgent:
                 missing_skills=final_scores["missing_skills"],
                 ai_recommendation=final_scores["ai_recommendation"],
                 company_logo=company_logo,
-            )
-            scored_jobs.append(scored_job)
+            ))
+
+        # Process the remaining fast-scored jobs
+        for job, fast_scores in fast_scored[len(ai_jobs):]:
+            final_scores = {
+                **fast_scores,
+                "match_reasons": [],
+                "missing_skills": [],
+                "ai_recommendation": f"Good potential match for {job.title} at {job.company}."
+            }
+            company_logo = job.company[0].upper() if job.company else "?"
+            scored_jobs.append(ScoredJob(
+                **job.model_dump(),
+                semantic_score=final_scores["semantic_score"],
+                skill_overlap_score=final_scores["skill_overlap_score"],
+                experience_score=final_scores["experience_score"],
+                overall_match=final_scores["overall_match"],
+                match_reasons=final_scores["match_reasons"],
+                missing_skills=final_scores["missing_skills"],
+                ai_recommendation=final_scores["ai_recommendation"],
+                company_logo=company_logo,
+            ))
 
         scored_jobs.sort(key=lambda j: j.overall_match, reverse=True)
         log.info(f"Scoring complete. Top match: {scored_jobs[0].overall_match}% — {scored_jobs[0].title} @ {scored_jobs[0].company}" if scored_jobs else "No jobs scored")
