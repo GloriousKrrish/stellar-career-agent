@@ -1,0 +1,23 @@
+# Render.com deployment config for Stellar Backend (Python/FastAPI)
+# This file tells Render how to build and start the backend.
+
+services:
+  - type: web
+    name: stellar-backend
+    env: python
+    region: singapore  # closest to India
+    plan: free
+    rootDir: stellar-backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: FIRECRAWL_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: APP_ENV
+        value: production
+      - key: FRONTEND_URL
+        sync: false

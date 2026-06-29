@@ -1,11 +1,20 @@
 // API helper for communicating with the FastAPI backend
+//
+// Priority:
+//  1. VITE_BACKEND_URL (set in Vercel env vars for production)
+//  2. localhost:8000 (automatic for local development)
 
-const getBaseUrl = () => {
+const getBaseUrl = (): string => {
+  // Injected at build time by Vite — set VITE_BACKEND_URL in Vercel project settings
+  if (import.meta.env.VITE_BACKEND_URL) {
+    return String(import.meta.env.VITE_BACKEND_URL).replace(/\/$/, "");
+  }
   if (typeof window === "undefined") return "";
-  // Check if we are running in development/localhost
+  // Local dev: frontend is on 8080, backend is on 8000
   if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
     return "http://localhost:8000";
   }
+  // Production without explicit env var — use relative (same-origin Vercel function)
   return "";
 };
 
