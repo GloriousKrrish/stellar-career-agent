@@ -316,183 +316,270 @@ async def fetch_jsearch(role: str, location: str, rapidapi_key: str) -> list[dic
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Checkpoint System for Task Resumption
+# ──────────────────────────────────────────────────────────────────────────────
+
+CHECKPOINT_FILE = "crawler_checkpoint.json"
+
+def save_checkpoint(keyword: str, current_page: int, platform: str):
+    """Save the crawler progress to a local JSON file."""
+    try:
+        data = {
+            "keyword": keyword,
+            "current_page": current_page,
+            "platform": platform,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        with open(CHECKPOINT_FILE, "w") as f:
+            json.dump(data, f)
+        log.info(f"Checkpoint saved: page {current_page} for '{keyword}' ({platform})")
+    except Exception as e:
+        log.warning(f"Failed to save checkpoint: {e}")
+
+def load_checkpoint(keyword: str) -> dict | None:
+    """Load the checkpoint if it matches the current search keyword."""
+    if not os.path.exists(CHECKPOINT_FILE):
+        return None
+    try:
+        with open(CHECKPOINT_FILE, "r") as f:
+            data = json.load(f)
+        if data.get("keyword") == keyword:
+            return data
+    except Exception as e:
+        log.warning(f"Failed to load checkpoint: {e}")
+    return None
+
+def clear_checkpoint():
+    """Clear the checkpoint file."""
+    if os.path.exists(CHECKPOINT_FILE):
+        try:
+            os.remove(CHECKPOINT_FILE)
+            log.info("Checkpoint cleared successfully.")
+        except Exception as e:
+            log.warning(f"Failed to clear checkpoint: {e}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Platform: Naukri & Glassdoor Crawlers (Live scrapers)
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def fetch_naukri(role: str, location: str = "", on_progress: Callable[[str], Any] | None = None) -> list[dict]:
-    """Fetch real jobs from Naukri via public search listings."""
+async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_pages: int = 3, on_progress: Callable[[str], Any] | None = None) -> list[dict]:
+    """Fetch real jobs from Naukri via public search listings across multiple pages."""
     jobs: list[dict] = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
-    await _notify(on_progress, "Naukri Scraper: Initialising direct browser crawl...")
-    try:
-        encoded_query = role.replace(" ", "-").lower()
-        if location:
-            encoded_loc = location.replace(" ", "-").lower()
-            url = f"https://www.naukri.com/{encoded_query}-jobs-in-{encoded_loc}"
+    
+    encoded_query = role.replace(" ", "-").lower()
+    base_url_part = f"{encoded_query}-jobs"
+    if location:
+        encoded_loc = location.replace(" ", "-").lower()
+        base_url_part = f"{encoded_query}-jobs-in-{encoded_loc}"
+
+    for page in range(start_page, max_pages + 1):
+        if page == 1:
+            url = f"https://www.naukri.com/{base_url_part}"
         else:
-            url = f"https://www.naukri.com/{encoded_query}-jobs"
+            url = f"https://www.naukri.com/{base_url_part}-{page}"
 
-        log.info(f"Crawling Naukri URL: {url}")
-        async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                log.warning(f"Naukri returned status {resp.status_code}")
-                if resp.status_code == 403:
-                    await _notify(on_progress, "Naukri Scraper: Crawl blocked by bot protection (HTTP 403).")
-                else:
-                    await _notify(on_progress, f"Naukri Scraper: Failed (HTTP {resp.status_code}).")
-                return jobs
+        await _notify(on_progress, f"Naukri Scraper: Crawling page {page}...")
+        log.info(f"Crawling Naukri URL (Page {page}): {url}")
+        
+        try:
+            async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    log.warning(f"Naukri returned status {resp.status_code} for page {page}")
+                    if resp.status_code == 403:
+                        await _notify(on_progress, f"Naukri Scraper: Crawl blocked by bot protection (HTTP 403) on page {page}.")
+                    break
 
-            html = resp.text
-            titles = re.findall(r'"title"\s*:\s*"([^"]+)"', html)
-            companies = re.findall(r'"companyName"\s*:\s*"([^"]+)"', html)
-            urls = re.findall(r'"jdURL"\s*:\s*"([^"]+)"', html)
-            locations_list = re.findall(r'"placeVal"\s*:\s*"([^"]+)"', html)
+                html = resp.text
+                titles = re.findall(r'"title"\s*:\s*"([^"]+)"', html)
+                companies = re.findall(r'"companyName"\s*:\s*"([^"]+)"', html)
+                urls = re.findall(r'"jdURL"\s*:\s*"([^"]+)"', html)
+                locations_list = re.findall(r'"placeVal"\s*:\s*"([^"]+)"', html)
 
-            for t, c, u, loc in zip(titles[:20], companies[:20], urls[:20], locations_list[:20]):
-                clean_title = re.sub(r'\\u[0-9a-fA-F]{4}', '', t).strip()
-                clean_company = re.sub(r'\\u[0-9a-fA-F]{4}', '', c).strip()
-                clean_loc = re.sub(r'\\u[0-9a-fA-F]{4}', '', loc).strip()
+                page_jobs = 0
+                for t, c, u, loc in zip(titles[:20], companies[:20], urls[:20], locations_list[:20]):
+                    try:
+                        clean_title = re.sub(r'\\u[0-9a-fA-F]{4}', '', t).strip()
+                        clean_company = re.sub(r'\\u[0-9a-fA-F]{4}', '', c).strip()
+                        clean_loc = re.sub(r'\\u[0-9a-fA-F]{4}', '', loc).strip()
+                        
+                        job_url = u
+                        if not job_url.startswith("http"):
+                            if job_url.startswith("/"):
+                                job_url = f"https://www.naukri.com{job_url}"
+                            else:
+                                job_url = f"https://www.naukri.com/{job_url}"
+                        if "naukri.com" not in job_url.lower():
+                            job_url = url
+
+                        jobs.append(make_job(
+                            title=clean_title,
+                            company=clean_company,
+                            location=clean_loc or "India",
+                            salary="",
+                            url=job_url,
+                            source="NAUKRI",
+                        ))
+                        page_jobs += 1
+                    except Exception as inner_e:
+                        log.warning(f"Failed parsing Naukri item: {inner_e}")
+                        continue
                 
-                job_url = u
-                if not job_url.startswith("http"):
-                    if job_url.startswith("/"):
-                        job_url = f"https://www.naukri.com{job_url}"
-                    else:
-                        job_url = f"https://www.naukri.com/{job_url}"
-                if "naukri.com" not in job_url.lower():
-                    job_url = url # fallback to parent search url
-
-                jobs.append(make_job(
-                    title=clean_title,
-                    company=clean_company,
-                    location=clean_loc or "India",
-                    salary="",
-                    url=job_url,
-                    source="NAUKRI",
-                ))
-        log.info(f"Naukri direct scraper found {len(jobs)} jobs")
-        await _notify(on_progress, f"Naukri Scraper: Extracted {len(jobs)} jobs.")
-    except Exception as e:
-        log.error(f"Naukri crawl failed: {e}")
-        await _notify(on_progress, "Naukri Scraper: Failed with network error.")
+                # Checkpoint progress after page is scraped successfully
+                save_checkpoint(keyword=role, current_page=page, platform="naukri")
+                
+                if page_jobs == 0:
+                    break
+                    
+                await asyncio.sleep(1.0)
+        except Exception as e:
+            log.error(f"Naukri crawl failed on page {page}: {e}")
+            break
+            
+    log.info(f"Naukri direct scraper found {len(jobs)} jobs in total")
+    await _notify(on_progress, f"Naukri Scraper: Extracted {len(jobs)} jobs.")
     return jobs
 
 
-async def fetch_glassdoor(role: str, location: str = "", on_progress: Callable[[str], Any] | None = None) -> list[dict]:
-    """Fetch real jobs from Glassdoor via public search and parsing JSON-LD."""
+async def fetch_glassdoor(role: str, location: str = "", start_page: int = 1, max_pages: int = 3, on_progress: Callable[[str], Any] | None = None) -> list[dict]:
+    """Fetch real jobs from Glassdoor via public search and parsing JSON-LD across multiple pages."""
     jobs: list[dict] = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
-    await _notify(on_progress, "Glassdoor Scraper: Initialising direct browser crawl...")
-    try:
-        encoded_query = role.replace(" ", "-")
-        url = f"https://www.glassdoor.com/Job/{encoded_query}-jobs-SRCH_KO0,{len(encoded_query)}.htm"
-        log.info(f"Crawling Glassdoor URL: {url}")
+    
+    encoded_query = role.replace(" ", "-")
 
-        async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
-            resp = await client.get(url)
-            if resp.status_code != 200:
-                log.warning(f"Glassdoor returned status {resp.status_code}")
-                if resp.status_code == 403:
-                    await _notify(on_progress, "Glassdoor Scraper: Crawl blocked by bot protection (HTTP 403).")
-                else:
-                    await _notify(on_progress, f"Glassdoor Scraper: Failed (HTTP {resp.status_code}).")
-                return jobs
+    for page in range(start_page, max_pages + 1):
+        if page == 1:
+            url = f"https://www.glassdoor.com/Job/{encoded_query}-jobs-SRCH_KO0,{len(encoded_query)}.htm"
+        else:
+            url = f"https://www.glassdoor.com/Job/{encoded_query}-jobs-SRCH_KO0,{len(encoded_query)}_IP{page}.htm"
 
-            html = resp.text
-            
-            # Extract JSON-LD JobPosting data
-            ld_matches = re.findall(
-                r'<script type="application/ld\+json">(.*?)</script>',
-                html, re.DOTALL
-            )
-            for ld_text in ld_matches:
-                try:
-                    ld_data = json.loads(ld_text)
-                    def parse_ld_item(ld: dict):
-                        if not isinstance(ld, dict) or ld.get("@type") != "JobPosting":
-                            return
-                        org = ld.get("hiringOrganization", {})
-                        company_name = org.get("name", "Unknown") if isinstance(org, dict) else str(org)
-                        
-                        location_data = ld.get("jobLocation", {})
-                        job_loc = "See listing"
-                        if isinstance(location_data, dict):
-                            addr = location_data.get("address", {})
-                            if isinstance(addr, dict):
-                                parts = [
-                                    addr.get("addressLocality", ""),
-                                    addr.get("addressRegion", ""),
-                                    addr.get("addressCountry", ""),
-                                ]
-                                job_loc = ", ".join(p for p in parts if p)
-                        
-                        salary = ""
-                        base_salary = ld.get("baseSalary", {})
-                        if isinstance(base_salary, dict):
-                            value = base_salary.get("value", {})
-                            if isinstance(value, dict):
-                                salary_min = value.get("minValue")
-                                salary_max = value.get("maxValue")
-                                if salary_min and salary_max:
-                                    salary = f"${salary_min:,} - ${salary_max:,}"
+        await _notify(on_progress, f"Glassdoor Scraper: Crawling page {page}...")
+        log.info(f"Crawling Glassdoor URL (Page {page}): {url}")
 
-                        job_url = ld.get("url", "")
-                        if not job_url.startswith("http"):
-                            if job_url.startswith("/"):
-                                job_url = f"https://www.glassdoor.com{job_url}"
-                            else:
-                                job_url = f"https://www.glassdoor.com/{job_url}"
-                        if "glassdoor.com" not in job_url.lower():
-                            job_url = url # fallback to parent search url
+        try:
+            async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    log.warning(f"Glassdoor returned status {resp.status_code} on page {page}")
+                    if resp.status_code == 403:
+                        await _notify(on_progress, f"Glassdoor Scraper: Crawl blocked by bot protection (HTTP 403) on page {page}.")
+                    break
 
-                        jobs.append(make_job(
-                            title=ld.get("title", "Unknown"),
-                            company=company_name,
-                            location=job_loc or "See listing",
-                            salary=salary,
-                            url=job_url,
-                            source="GLASSDOOR",
-                            description=ld.get("description", "")[:500],
-                        ))
-                    
-                    if isinstance(ld_data, dict):
-                        parse_ld_item(ld_data)
-                    elif isinstance(ld_data, list):
-                        for item in ld_data:
-                            parse_ld_item(item)
-                except Exception:
-                    continue
-
-            # Fallback parsing HTML patterns
-            if not jobs:
-                job_cards = re.findall(
-                    r'data-job-id="(\d+)".*?data-normalize-job-title="([^"]*)".*?'
-                    r'data-employer-name="([^"]*)"',
+                html = resp.text
+                page_jobs_count = 0
+                
+                # Extract JSON-LD JobPosting data
+                ld_matches = re.findall(
+                    r'<script type="application/ld\+json">(.*?)</script>',
                     html, re.DOTALL
                 )
-                for job_id, title, company_name in job_cards[:20]:
-                    jobs.append(make_job(
-                        title=title.strip(),
-                        company=company_name.strip(),
-                        location="See listing",
-                        salary="",
-                        url=f"https://www.glassdoor.com/job-listing/{job_id}",
-                        source="GLASSDOOR",
-                    ))
-        log.info(f"Glassdoor scraper found {len(jobs)} jobs")
-        await _notify(on_progress, f"Glassdoor Scraper: Extracted {len(jobs)} jobs.")
-    except Exception as e:
-        log.error(f"Glassdoor crawl failed: {e}")
-        await _notify(on_progress, "Glassdoor Scraper: Failed with network error.")
+                for ld_text in ld_matches:
+                    try:
+                        ld_data = json.loads(ld_text)
+                        def parse_ld_item(ld: dict):
+                            nonlocal page_jobs_count
+                            if not isinstance(ld, dict) or ld.get("@type") != "JobPosting":
+                                return
+                            org = ld.get("hiringOrganization", {})
+                            company_name = org.get("name", "Unknown") if isinstance(org, dict) else str(org)
+                            
+                            location_data = ld.get("jobLocation", {})
+                            job_loc = "See listing"
+                            if isinstance(location_data, dict):
+                                addr = location_data.get("address", {})
+                                if isinstance(addr, dict):
+                                    parts = [
+                                        addr.get("addressLocality", ""),
+                                        addr.get("addressRegion", ""),
+                                        addr.get("addressCountry", ""),
+                                    ]
+                                    job_loc = ", ".join(p for p in parts if p)
+                            
+                            salary = ""
+                            base_salary = ld.get("baseSalary", {})
+                            if isinstance(base_salary, dict):
+                                value = base_salary.get("value", {})
+                                if isinstance(value, dict):
+                                    salary_min = value.get("minValue")
+                                    salary_max = value.get("maxValue")
+                                    if salary_min and salary_max:
+                                        salary = f"${salary_min:,} - ${salary_max:,}"
+
+                            job_url = ld.get("url", "")
+                            if not job_url.startswith("http"):
+                                if job_url.startswith("/"):
+                                    job_url = f"https://www.glassdoor.com{job_url}"
+                                else:
+                                    job_url = f"https://www.glassdoor.com/{job_url}"
+                            if "glassdoor.com" not in job_url.lower():
+                                job_url = url
+
+                            jobs.append(make_job(
+                                title=ld.get("title", "Unknown"),
+                                company=company_name,
+                                location=job_loc or "See listing",
+                                salary=salary,
+                                url=job_url,
+                                source="GLASSDOOR",
+                                description=ld.get("description", "")[:500],
+                            ))
+                            page_jobs_count += 1
+                        
+                        if isinstance(ld_data, dict):
+                            parse_ld_item(ld_data)
+                        elif isinstance(ld_data, list):
+                            for item in ld_data:
+                                parse_ld_item(item)
+                    except Exception as inner_ld_e:
+                        log.warning(f"Failed parsing Glassdoor JSON-LD item: {inner_ld_e}")
+                        continue
+
+                # Fallback parsing HTML patterns
+                if page_jobs_count == 0:
+                    job_cards = re.findall(
+                        r'data-job-id="(\d+)".*?data-normalize-job-title="([^"]*)".*?'
+                        r'data-employer-name="([^"]*)"',
+                        html, re.DOTALL
+                    )
+                    for job_id, title, company_name in job_cards[:20]:
+                        try:
+                            jobs.append(make_job(
+                                title=title.strip(),
+                                company=company_name.strip(),
+                                location="See listing",
+                                salary="",
+                                url=f"https://www.glassdoor.com/job-listing/{job_id}",
+                                source="GLASSDOOR",
+                            ))
+                            page_jobs_count += 1
+                        except Exception as inner_card_e:
+                            log.warning(f"Failed parsing Glassdoor card: {inner_card_e}")
+                            continue
+
+                # Save checkpoint progress after page is scraped successfully
+                save_checkpoint(keyword=role, current_page=page, platform="glassdoor")
+                
+                if page_jobs_count == 0:
+                    break
+                    
+                await asyncio.sleep(1.0)
+        except Exception as e:
+            log.error(f"Glassdoor crawl failed on page {page}: {e}")
+            break
+            
+    log.info(f"Glassdoor scraper found {len(jobs)} jobs in total")
+    await _notify(on_progress, f"Glassdoor Scraper: Extracted {len(jobs)} jobs.")
     return jobs
 
 
@@ -552,6 +639,15 @@ async def search_jobs_resilient(
     """
     all_jobs: list[dict] = []
     provider_used = "Glassdoor & Naukri Crawler"
+
+    # Check for existing checkpoint from a previous crash/interruption
+    checkpoint = load_checkpoint(keyword=role)
+    start_page = 1
+    if checkpoint:
+        start_page = checkpoint.get("current_page", 1)
+        log.info(f"Checkpoint found: resuming '{role}' from page {start_page}")
+        if on_progress:
+            await _notify(on_progress, f"Checkpoint detected: Resuming search from page {start_page}...")
     
     # 1. Fetch Naukri via Firecrawl Scraper if key exists
     if firecrawl_key:
@@ -566,7 +662,7 @@ async def search_jobs_resilient(
 
     # 2. Fetch Naukri via direct scrape (as a backup / additional source)
     try:
-        nk_jobs = await fetch_naukri(role, location, on_progress)
+        nk_jobs = await fetch_naukri(role, location, start_page=start_page, on_progress=on_progress)
         if nk_jobs:
             all_jobs.extend(nk_jobs)
     except Exception as e:
@@ -574,7 +670,7 @@ async def search_jobs_resilient(
 
     # 3. Fetch Glassdoor via direct scrape
     try:
-        gd_jobs = await fetch_glassdoor(role, location, on_progress)
+        gd_jobs = await fetch_glassdoor(role, location, start_page=start_page, on_progress=on_progress)
         if gd_jobs:
             all_jobs.extend(gd_jobs)
     except Exception as e:
@@ -607,6 +703,9 @@ async def search_jobs_resilient(
         await _notify(on_progress, "Live crawling returned 0 results. Activating high-quality demo fallback dataset...")
         all_jobs = get_demo_jobs(role, location)
         provider_used = "Demo Fallback Dataset"
+
+    # Clear checkpoint after successful completion of job discovery
+    clear_checkpoint()
 
     # Deduplicate by title + company
     seen = set()
