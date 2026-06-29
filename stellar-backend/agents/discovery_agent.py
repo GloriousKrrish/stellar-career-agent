@@ -247,6 +247,15 @@ class JobDiscoveryAgent:
             if "remote" in str(job_loc_type).lower() or "remote" in location.lower():
                 remote_type = "Remote"
 
+            job_url = ld.get("url", "")
+            if not job_url.startswith("http"):
+                if job_url.startswith("/"):
+                    job_url = f"https://www.glassdoor.com{job_url}"
+                else:
+                    job_url = f"https://www.glassdoor.com/{job_url}"
+            if "glassdoor.com" not in job_url.lower():
+                job_url = "https://www.glassdoor.com"
+
             jobs.append(RawJob(
                 id=str(uuid.uuid4()),
                 title=ld.get("title", "Unknown"),
@@ -258,7 +267,7 @@ class JobDiscoveryAgent:
                 salary_max=salary_max,
                 description=self._clean_html(ld.get("description", ""))[:500],
                 skills=[],
-                url=ld.get("url", ""),
+                url=job_url,
                 source="glassdoor.com",
                 posted_at=ld.get("datePosted", "Recently"),
                 industry=ld.get("industry", ""),
@@ -298,6 +307,15 @@ class JobDiscoveryAgent:
                 locations = re.findall(r'"placeVal"\s*:\s*"([^"]+)"', html)
 
                 for t, c, u, loc in zip(titles[:20], companies[:20], urls[:20], locations[:20]):
+                    job_url = u
+                    if not job_url.startswith("http"):
+                        if job_url.startswith("/"):
+                            job_url = f"https://www.naukri.com{job_url}"
+                        else:
+                            job_url = f"https://www.naukri.com/{job_url}"
+                    if "naukri.com" not in job_url.lower():
+                        job_url = url # fallback to parent search url
+
                     jobs.append(RawJob(
                         id=str(uuid.uuid4()),
                         title=self._clean_html(t),
@@ -307,7 +325,7 @@ class JobDiscoveryAgent:
                         salary="",
                         description="",
                         skills=[],
-                        url=u if u.startswith("http") else f"https://www.naukri.com{u}",
+                        url=job_url,
                         source="naukri.com",
                         posted_at="Recently",
                     ))
@@ -400,6 +418,19 @@ Return ONLY valid JSON array (no markdown):
             if rem not in ["Remote", "Hybrid", "Onsite"]:
                 rem = "Remote" if "remote" in str(item.get("location", "")).lower() else "Onsite"
 
+            job_url = item.get("url") or ""
+            source_lower = str(item.get("source", "")).lower()
+
+            # Validation step to ensure URLs don't bleed out
+            if "naukri" in source_lower:
+                if "naukri.com" not in job_url.lower():
+                    # Fallback to general Naukri search page or ignore
+                    job_url = f"https://www.naukri.com/{query.replace(' ', '-').lower()}-jobs"
+            elif "glassdoor" in source_lower:
+                if "glassdoor.com" not in job_url.lower():
+                    # Fallback to general Glassdoor search page or ignore
+                    job_url = f"https://www.glassdoor.com/Job/{query.replace(' ', '-').lower()}-jobs.htm"
+
             all_jobs.append(RawJob(
                 id=item.get("id") or str(uuid.uuid4()),
                 title=item.get("title", "Unknown"),
@@ -409,7 +440,7 @@ Return ONLY valid JSON array (no markdown):
                 salary=item.get("salary") or "Undisclosed",
                 description=item.get("description") or "No description provided.",
                 skills=item.get("skills") or [],
-                url=item.get("url") or "",
+                url=job_url,
                 source=item.get("source") or "Web",
                 posted_at=item.get("posted_at") or "Recently",
             ))

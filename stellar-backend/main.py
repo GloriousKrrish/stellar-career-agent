@@ -104,7 +104,22 @@ async def lifespan(app: FastAPI):
             status=agent_def[2],
         ))
 
+    # Crash recovery: Resume any pending/interrupted workflows on boot
+    from workflow import resume_interrupted_workflows, start_heartbeat_monitor
+    try:
+        await resume_interrupted_workflows()
+    except Exception as e:
+        log.error(f"Error resuming interrupted workflows on startup: {e}", exc_info=True)
+
+    # Start the periodic heartbeat monitor background worker task
+    app.state.heartbeat_monitor_task = asyncio.create_task(start_heartbeat_monitor())
+
     yield
+
+    # Cancel heartbeat monitor on shutdown
+    if hasattr(app.state, "heartbeat_monitor_task"):
+        app.state.heartbeat_monitor_task.cancel()
+
     log.info("Stellar Career Agent API shutting down")
 
 

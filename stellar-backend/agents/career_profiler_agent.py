@@ -68,8 +68,22 @@ class CareerProfilerAgent:
             "summary": user_profile.summary,
         }
         prompt = PROFILER_PROMPT.format(profile_json=json.dumps(compact, indent=2)[:4000])
-        response = await self.model.generate_content_async(prompt)
-        data = self._safe_parse(response.text)
+        try:
+            response = await self.model.generate_content_async(prompt)
+            data = self._safe_parse(response.text)
+        except Exception as e:
+            log.warning(f"CareerProfilerAgent Gemini call failed: {e}. Using rule-based fallback.")
+            role_hint = user_profile.skills[0] if user_profile.skills else "Software Engineer"
+            data = {
+                "career_paths": ["Software Engineering", "Systems Development"],
+                "ideal_titles": [role_hint, f"Senior {role_hint}", f"Lead {role_hint}"],
+                "seniority_level": "Mid",
+                "industries": ["Technology", "Internet"],
+                "salary_min": 1000000,
+                "salary_max": 2400000,
+                "strengths": [f"Experience in {role_hint}", "Problem Solving", "Software Design"],
+                "growth_areas": ["System Architecture", "Scale Operations"]
+            }
 
         career = CareerProfile(
             user_id=user_profile.id,

@@ -111,6 +111,20 @@ def init_db():
         FOREIGN KEY (user_id) REFERENCES users(id)
     )
     """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS job_tasks (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        current_page INTEGER DEFAULT 1,
+        target_platforms TEXT DEFAULT '',
+        last_heartbeat TEXT NOT NULL,
+        payload TEXT DEFAULT '{}',
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+    """)
     
     conn.commit()
     conn.close()
@@ -544,3 +558,114 @@ def db_delete_application(app_id: str) -> None:
         cursor.execute("DELETE FROM applications WHERE id = ?", (app_id,))
     conn.commit()
     conn.close()
+
+
+# ─── Job Tasks Operations ───────────────────────────────────────────────────
+
+def db_save_job_task(task_data: dict) -> None:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    now = datetime.utcnow().isoformat()
+    if IS_POSTGRES:
+        cursor.execute("""
+        INSERT INTO job_tasks (
+            id, user_id, run_id, status, current_page, target_platforms, last_heartbeat, payload
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (id) DO UPDATE SET
+            user_id = EXCLUDED.user_id,
+            run_id = EXCLUDED.run_id,
+            status = EXCLUDED.status,
+            current_page = EXCLUDED.current_page,
+            target_platforms = EXCLUDED.target_platforms,
+            last_heartbeat = EXCLUDED.last_heartbeat,
+            payload = EXCLUDED.payload
+        """, (
+            task_data["id"],
+            task_data["user_id"],
+            task_data["run_id"],
+            task_data["status"],
+            task_data.get("current_page", 1),
+            task_data.get("target_platforms", ""),
+            task_data.get("last_heartbeat", now),
+            task_data.get("payload", "{}")
+        ))
+    else:
+        cursor.execute("""
+        INSERT OR REPLACE INTO job_tasks (
+            id, user_id, run_id, status, current_page, target_platforms, last_heartbeat, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            task_data["id"],
+            task_data["user_id"],
+            task_data["run_id"],
+            task_data["status"],
+            task_data.get("current_page", 1),
+            task_data.get("target_platforms", ""),
+            task_data.get("last_heartbeat", now),
+            task_data.get("payload", "{}")
+        ))
+    conn.commit()
+    conn.close()
+
+def db_get_job_task(task_id: str) -> Optional[dict]:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    if IS_POSTGRES:
+        cursor.execute("SELECT * FROM job_tasks WHERE id = %s", (task_id,))
+    else:
+        cursor.execute("SELECT * FROM job_tasks WHERE id = ?", (task_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def db_update_task_heartbeat(task_id: str, current_page: int = None, status: str = None) -> None:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    now = datetime.utcnow().isoformat()
+    
+    updates = ["last_heartbeat = ?"]
+    params = [now]
+    if current_page is not None:
+        updates.append("current_page = ?")
+        params.append(current_page)
+    if status is not None:
+        updates.append("status = ?")
+        params.append(status)
+        
+    query_str = f"UPDATE job_tasks SET {', '.join(updates)} WHERE id = ?"
+    params_tuple = tuple(params + [task_id])
+    
+    if IS_POSTGRES:
+        query_str = query_str.replace("?", "%s")
+        
+    cursor.execute(query_str, params_tuple)
+    conn.commit()
+    conn.close()
+
+def db_get_stale_tasks(timeout_seconds: int = 120) -> List[dict]:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    
+    cursor.execute("SELECT * FROM job_tasks WHERE status = 'processing'")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    stale_tasks = []
+    now = datetime.utcnow()
+    for r in rows:
+        r_dict = dict(r)
+        try:
+            last_hb = datetime.fromisoformat(r_dict["last_heartbeat"])
+            if (now - last_hb).total_seconds() > timeout_seconds:
+                stale_tasks.append(r_dict)
+        except Exception:
+            stale_tasks.append(r_dict)
+    return stale_tasks
+
+def db_get_active_tasks() -> List[dict]:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    cursor.execute("SELECT * FROM job_tasks WHERE status IN ('pending', 'processing')")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

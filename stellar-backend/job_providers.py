@@ -131,12 +131,16 @@ async def fetch_firecrawl(role: str, location: str, firecrawl_key: str, on_progr
                 for j in raw_jobs[:20]:
                     if not j.get("title"):
                         continue
+                    job_url = j.get("url", "")
+                    if not job_url or "naukri.com" not in job_url.lower():
+                        job_url = naukri_url
+
                     jobs.append(make_job(
                         title=j.get("title", ""),
                         company=j.get("company", "Unknown"),
                         location=j.get("location", location or "India"),
                         salary=j.get("salary", ""),
-                        url=j.get("url", naukri_url),
+                        url=job_url,
                         source="NAUKRI",
                         skills=j.get("skills", []),
                     ))
@@ -354,12 +358,21 @@ async def fetch_naukri(role: str, location: str = "", on_progress: Callable[[str
                 clean_company = re.sub(r'\\u[0-9a-fA-F]{4}', '', c).strip()
                 clean_loc = re.sub(r'\\u[0-9a-fA-F]{4}', '', loc).strip()
                 
+                job_url = u
+                if not job_url.startswith("http"):
+                    if job_url.startswith("/"):
+                        job_url = f"https://www.naukri.com{job_url}"
+                    else:
+                        job_url = f"https://www.naukri.com/{job_url}"
+                if "naukri.com" not in job_url.lower():
+                    job_url = url # fallback to parent search url
+
                 jobs.append(make_job(
                     title=clean_title,
                     company=clean_company,
                     location=clean_loc or "India",
                     salary="",
-                    url=u if u.startswith("http") else f"https://www.naukri.com{u}",
+                    url=job_url,
                     source="NAUKRI",
                 ))
         log.info(f"Naukri direct scraper found {len(jobs)} jobs")
@@ -432,12 +445,21 @@ async def fetch_glassdoor(role: str, location: str = "", on_progress: Callable[[
                                 if salary_min and salary_max:
                                     salary = f"${salary_min:,} - ${salary_max:,}"
 
+                        job_url = ld.get("url", "")
+                        if not job_url.startswith("http"):
+                            if job_url.startswith("/"):
+                                job_url = f"https://www.glassdoor.com{job_url}"
+                            else:
+                                job_url = f"https://www.glassdoor.com/{job_url}"
+                        if "glassdoor.com" not in job_url.lower():
+                            job_url = url # fallback to parent search url
+
                         jobs.append(make_job(
                             title=ld.get("title", "Unknown"),
                             company=company_name,
                             location=job_loc or "See listing",
                             salary=salary,
-                            url=ld.get("url", ""),
+                            url=job_url,
                             source="GLASSDOOR",
                             description=ld.get("description", "")[:500],
                         ))
