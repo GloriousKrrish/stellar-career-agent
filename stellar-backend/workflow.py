@@ -62,6 +62,9 @@ async def run_full_workflow(
     if not state:
         state = WorkflowState(run_id=run_id, user_id=user_profile.id)
 
+    if request.role and request.role not in user_profile.skills:
+        user_profile.skills = list(user_profile.skills) + [request.role]
+
     state.user_profile = user_profile
     state.status = "running"
     store.save_workflow(state)
@@ -87,6 +90,8 @@ async def run_full_workflow(
 
             profiler = CareerProfilerAgent()
             career = await profiler.profile(user_profile)
+            if request.role:
+                career.ideal_titles = [request.role] + [t for t in career.ideal_titles if t.lower() != request.role.lower()]
             state.career_profile = career
             state.steps_completed.append("career_profiling")
             store.save_workflow(state)
@@ -135,10 +140,16 @@ async def run_full_workflow(
                 page_val = int(page_match.group(1)) if page_match else None
                 db.db_update_task_heartbeat(run_id, current_page=page_val, status="processing")
 
+            salary_target_val = ""
+            if request.salary_min:
+                salary_target_val = f"₹{request.salary_min // 100000} LPA"
+
             raw_jobs = await discovery.discover(
                 user_profile=user_profile,
                 career=career,
                 role=request.role,
+                location=request.location,
+                salary_target=salary_target_val,
                 remote_preference=request.remote_preference,
                 limit=25,
                 on_progress=on_discovery_progress,
@@ -280,9 +291,15 @@ async def run_job_search_workflow(
             page_val = int(page_match.group(1)) if page_match else None
             db.db_update_task_heartbeat(run_id, current_page=page_val, status="processing")
 
-        raw_jobs = await discovery.discover(dummy_profile, career, role=role,
-                                            remote_preference=remote_preference, limit=limit,
-                                            on_progress=on_discovery_progress)
+        raw_jobs = await discovery.discover(
+            user_profile=dummy_profile,
+            career=career,
+            role=role,
+            location=location,
+            remote_preference=remote_preference,
+            limit=limit,
+            on_progress=on_discovery_progress,
+        )
 
         db.db_update_task_heartbeat(run_id, current_page=2, status="processing")
 

@@ -456,7 +456,10 @@ async def fetch_glassdoor(role: str, location: str = "", start_page: int = 1, ma
         "Accept-Language": "en-US,en;q=0.9",
     }
     
-    encoded_query = role.replace(" ", "-")
+    search_term = role
+    if location:
+        search_term = f"{role} {location}"
+    encoded_query = search_term.replace(" ", "-").lower()
 
     for page in range(start_page, max_pages + 1):
         if page == 1:

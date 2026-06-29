@@ -385,6 +385,8 @@ Return ONLY valid JSON array (no markdown):
         user_profile: UserProfile,
         career: CareerProfile,
         role: str = "",
+        location: str = "",
+        salary_target: str = "",
         remote_preference: str = "Remote",
         limit: int = 20,
         on_progress: Callable[[str], Any] | None = None,
@@ -398,9 +400,9 @@ Return ONLY valid JSON array (no markdown):
 
         from job_providers import search_jobs_resilient
 
-        loc = user_profile.location or ""
-        salary_target_str = ""
-        if career.salary_min:
+        loc = location or user_profile.location or ""
+        salary_target_str = salary_target or ""
+        if not salary_target_str and career.salary_min:
             salary_target_str = f"₹{career.salary_min // 100000} LPA"
 
         raw_list, provider = await search_jobs_resilient(
