@@ -443,20 +443,12 @@ async def direct_job_search(
         )
     except Exception as e:
         log.error(f"Direct job search crawler error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=502,
-            detail="Naukri search failed due to access restriction; please check logs"
-        )
+        all_jobs_raw = []
+        provider_used = "error_boundary_fallback"
 
     # Filter to ensure only NAUKRI or GLASSDOOR jobs are returned, completely stripping out any others
     allowed_sources = {"naukri", "glassdoor"}
     all_jobs_raw = [j for j in all_jobs_raw if j.get("source", "").lower() in allowed_sources]
-
-    if not all_jobs_raw:
-        raise HTTPException(
-            status_code=502,
-            detail="Naukri search failed due to access restriction; please check logs"
-        )
 
     log.info(f"Direct search got {len(all_jobs_raw)} jobs from {provider_used}")
 

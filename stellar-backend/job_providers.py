@@ -370,12 +370,22 @@ def clean_naukri_url(url_str: str) -> str:
     # Strip tracking query parameters
     clean_url = url_str.split("?")[0].strip()
     
-    # Ensure absolute URL
-    if not clean_url.startswith("http"):
-        if clean_url.startswith("/"):
-            clean_url = f"https://www.naukri.com{clean_url}"
-        else:
+    # Handle absolute, protocol-relative, root-relative, or relative formats cleanly
+    if clean_url.startswith("http://") or clean_url.startswith("https://"):
+        pass
+    elif clean_url.startswith("//"):
+        clean_url = f"https:{clean_url}"
+    elif clean_url.startswith("/"):
+        clean_url = f"https://www.naukri.com{clean_url}"
+    elif clean_url.startswith("www.naukri.com"):
+        clean_url = f"https://{clean_url}"
+    elif "job-listings-" in clean_url:
+        if "naukri.com" not in clean_url:
             clean_url = f"https://www.naukri.com/{clean_url}"
+        else:
+            clean_url = f"https://{clean_url}"
+    else:
+        return ""
             
     # Restrict to valid job listing pages (must contain /job-listings-)
     if "/job-listings-" not in clean_url:
