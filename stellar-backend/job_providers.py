@@ -363,6 +363,27 @@ def clear_checkpoint():
 # Platform: Naukri & Glassdoor Crawlers (Live scrapers)
 # ──────────────────────────────────────────────────────────────────────────────
 
+def clean_naukri_url(url_str: str) -> str:
+    """Clean and validate Naukri job listing URL, removing session/campus/analytical tokens."""
+    if not url_str:
+        return ""
+    # Strip tracking query parameters
+    clean_url = url_str.split("?")[0].strip()
+    
+    # Ensure absolute URL
+    if not clean_url.startswith("http"):
+        if clean_url.startswith("/"):
+            clean_url = f"https://www.naukri.com{clean_url}"
+        else:
+            clean_url = f"https://www.naukri.com/{clean_url}"
+            
+    # Restrict to valid job listing pages (must contain /job-listings-)
+    if "/job-listings-" not in clean_url:
+        return ""
+        
+    return clean_url
+
+
 async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_pages: int = 3, on_progress: Callable[[str], Any] | None = None) -> list[dict]:
     """Fetch real jobs from Naukri via public search listings across multiple pages."""
     from bs4 import BeautifulSoup
@@ -436,7 +457,7 @@ async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_p
                 
                 soup = BeautifulSoup(html, "html.parser")
                 page_jobs = 0
-
+ 
                 # Strategy A: Parse window.__INITIAL_STATE__ if it exists in script tags
                 initial_state_found = False
                 for script in soup.find_all("script"):
@@ -463,19 +484,14 @@ async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_p
                                         try:
                                             title = j.get("title", "")
                                             company = j.get("companyName", "Unknown")
-                                            job_url = j.get("jdURL", "")
+                                            job_url = clean_naukri_url(j.get("jdURL", ""))
+                                            
+                                            if not title or not job_url:
+                                                continue
+                                                
                                             loc = j.get("placeVal", location or "India")
                                             salary = j.get("salaryVal", "")
                                             skills = [s.get("name", "") for s in j.get("tagsAndSkillsList", []) if s.get("name")]
-                                            
-                                            if not title:
-                                                continue
-                                                
-                                            if not job_url.startswith("http"):
-                                                if job_url.startswith("/"):
-                                                    job_url = f"https://www.naukri.com{job_url}"
-                                                else:
-                                                    job_url = f"https://www.naukri.com/{job_url}"
                                             
                                             jobs.append(make_job(
                                                 title=title,
@@ -518,17 +534,19 @@ async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_p
                     
                     for container in containers:
                         try:
-                            title_el = container.find("a", href=lambda x: x and "/job-listings-" in x)
+                            # Force it to target the unique job title anchor tag explicitly
+                            # title typically has class "title" or "job-title-anchor"
+                            title_el = container.find("a", class_=lambda x: x and any(cls in x.lower() for cls in ["title", "job-title-anchor"]))
                             if not title_el:
-                                title_el = container.find("a", class_=lambda x: x and "title" in x.lower())
-                            if not title_el:
-                                title_el = container.find(["h1", "h2", "h3", "h4", "a"])
+                                title_el = container.find("a", href=lambda x: x and "/job-listings-" in x)
                                 
                             if not title_el:
                                 continue
                                 
                             title = title_el.get_text(strip=True)
-                            job_url = title_el.get("href", "")
+                            job_url = clean_naukri_url(title_el.get("href", ""))
+                            if not job_url:
+                                continue
                             
                             comp_el = container.find(class_=lambda x: x and ("comp-name" in x.lower() or "company" in x.lower() or "org" in x.lower()))
                             if not comp_el:
@@ -544,15 +562,6 @@ async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_p
                             skills_el = container.find_all(class_=lambda x: x and "skill" in x.lower())
                             skills = [s.get_text(strip=True) for s in skills_el if s.get_text(strip=True)]
                             
-                            if not job_url:
-                                continue
-                                
-                            if not job_url.startswith("http"):
-                                if job_url.startswith("/"):
-                                    job_url = f"https://www.naukri.com{job_url}"
-                                else:
-                                    job_url = f"https://www.naukri.com/{job_url}"
-                                    
                             jobs.append(make_job(
                                 title=title,
                                 company=company,
@@ -566,7 +575,7 @@ async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_p
                         except Exception as inner_e:
                             log.warning(f"Failed parsing BeautifulSoup container: {inner_e}")
                             continue
-
+ 
                 # Strategy C: Regex-based fallback parsing
                 if page_jobs == 0:
                     titles = re.findall(r'"title"\s*:\s*"([^"]+)"', html)
@@ -580,14 +589,9 @@ async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_p
                             clean_company = re.sub(r'\\u[0-9a-fA-F]{4}', '', c).strip()
                             clean_loc = re.sub(r'\\u[0-9a-fA-F]{4}', '', loc).strip()
                             
-                            job_url = u
-                            if not job_url.startswith("http"):
-                                if job_url.startswith("/"):
-                                    job_url = f"https://www.naukri.com{job_url}"
-                                else:
-                                    job_url = f"https://www.naukri.com/{job_url}"
-                            if "naukri.com" not in job_url.lower():
-                                job_url = url
+                            job_url = clean_naukri_url(u)
+                            if not job_url:
+                                continue
                                 
                             jobs.append(make_job(
                                 title=clean_title,
