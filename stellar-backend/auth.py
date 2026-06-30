@@ -30,6 +30,13 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class GoogleLoginRequest(BaseModel):
+    token: str
+    name: str | None = None
+    email: str | None = None
+
+
+
 class AuthResponse(BaseModel):
     token: str
     user: dict[str, Any]
@@ -339,3 +346,109 @@ def update_user_profile(email: str, updates: dict[str, Any]) -> dict[str, Any] |
 
         db.save_user(user_data)
         return {k: v for k, v in user_data.items() if k != "password_hash"}
+
+
+def google_auth_user(token: str, name: str | None = None, email: str | None = None) -> tuple[str, dict[str, Any]]:
+    """Log in or register a user via Google Auth."""
+    # 1. Verify Google token if it's a real token (not starting with 'mock-')
+    # If it is a mock token, we expect the frontend to pass name and email.
+    if token.startswith("mock-google-token-"):
+        if not email:
+            raise ValueError("Email is required for mock Google Auth")
+        email_lower = email.lower().strip()
+        user_name = name.strip() if name else "Google User"
+        google_id = token.replace("mock-google-token-", "")
+    else:
+        # Real Google Token verification
+        import httpx
+        try:
+            # Call Google Token Info endpoint
+            response = httpx.get(f"https://oauth2.googleapis.com/tokeninfo?id_token={token}", timeout=5)
+            if response.status_code != 200:
+                raise ValueError("Invalid Google token")
+            data = response.json()
+            # Verify issuer
+            if data.get("iss") not in ("accounts.google.com", "https://accounts.google.com"):
+                raise ValueError("Invalid token issuer")
+            email_lower = data.get("email", "").lower().strip()
+            user_name = data.get("name", "").strip() or data.get("given_name", "").strip() or "Google User"
+            google_id = data.get("sub", "")
+            if not email_lower or not google_id:
+                raise ValueError("Token missing email or user ID info")
+        except Exception as e:
+            log.error(f"Google token verification failed: {e}")
+            raise ValueError(f"Google verification failed: {str(e)}")
+
+    # Now register or log in the user
+    if supabase_client.SUPABASE_ENABLED:
+        supabase = supabase_client.supabase
+        try:
+            existing = supabase.table("profiles").select("*").eq("email", email_lower).execute()
+            if existing.data:
+                profile = existing.data[0]
+                user_id = profile["id"]
+            else:
+                user_id = str(uuid.uuid4())
+                profile = {
+                    "id": user_id,
+                    "name": user_name,
+                    "email": email_lower,
+                    "title": "",
+                    "location": "",
+                    "skills": [],
+                    "resume_score": 0,
+                    "ats_score": 0,
+                    "missing_skills": [],
+                    "improvements": [],
+                    "run_id": "",
+                    "raw_text": "",
+                    "resume_text": "",
+                    "resume_path": "",
+                    "experience": [],
+                    "preferences": {},
+                    "keywords": []
+                }
+                supabase.table("profiles").insert(profile).execute()
+            
+            token_str = _create_token(user_id, email_lower)
+            return token_str, profile
+        except Exception as e:
+            raise ValueError(f"Supabase Google Auth failed: {str(e)}")
+    else:
+        # Local SQLite Google login/registration
+        import db
+        user_data = db.get_user_by_email(email_lower)
+        if not user_data:
+            # Register new user
+            user_id = str(uuid.uuid4())
+            password_hash = "google_auth:" + str(uuid.uuid4())
+            user_data = {
+                "id": user_id,
+                "name": user_name,
+                "email": email_lower,
+                "password_hash": password_hash,
+                "created_at": datetime.utcnow().isoformat(),
+                "title": "",
+                "location": "",
+                "skills": [],
+                "resume_score": 0,
+                "ats_score": 0,
+                "missing_skills": [],
+                "improvements": [],
+                "run_id": "",
+                "raw_text": "",
+                "resume_text": "",
+                "resume_path": "",
+                "experience": [],
+                "preferences": {},
+                "keywords": []
+            }
+            db.save_user(user_data)
+            log.info(f"New Google user registered locally: {email_lower} (id={user_id})")
+        else:
+            log.info(f"Existing Google user logged in locally: {email_lower}")
+
+        token_str = _create_token(user_data["id"], email_lower)
+        safe_user = {k: v for k, v in user_data.items() if k != "password_hash"}
+        return token_str, safe_user
+

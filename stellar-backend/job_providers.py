@@ -365,17 +365,34 @@ def clear_checkpoint():
 
 async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_pages: int = 3, on_progress: Callable[[str], Any] | None = None) -> list[dict]:
     """Fetch real jobs from Naukri via public search listings across multiple pages."""
+    from bs4 import BeautifulSoup
     jobs: list[dict] = []
+    
+    # Modern browser user-agent and headers (stealth headers)
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.naukri.com/",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+        "Cache-Control": "max-age=0",
     }
     
-    encoded_query = role.replace(" ", "-").lower()
+    # 1. DYNAMIC SEARCH URL GENERATION
+    # Ensure query format perfectly matches Naukri's official structure.
+    # Convert raw search spaces/special chars to single hyphens and lowercase.
+    clean_role = re.sub(r'[^a-zA-Z0-9\s-]', '', role)
+    encoded_query = re.sub(r'[-\s]+', '-', clean_role).strip('-').lower()
+    
     base_url_part = f"{encoded_query}-jobs"
     if location:
-        encoded_loc = location.replace(" ", "-").lower()
+        clean_loc = re.sub(r'[^a-zA-Z0-9\s-]', '', location)
+        encoded_loc = re.sub(r'[-\s]+', '-', clean_loc).strip('-').lower()
         base_url_part = f"{encoded_query}-jobs-in-{encoded_loc}"
 
     for page in range(start_page, max_pages + 1):
@@ -390,46 +407,200 @@ async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_p
         try:
             async with httpx.AsyncClient(timeout=15, headers=headers, follow_redirects=True) as client:
                 resp = await client.get(url)
-                if resp.status_code != 200:
-                    log.warning(f"Naukri returned status {resp.status_code} for page {page}")
-                    if resp.status_code == 403:
-                        await _notify(on_progress, f"Naukri Scraper: Crawl blocked by bot protection (HTTP 403) on page {page}.")
-                    break
-
+                
+                # Check for obvious block codes or pages
+                if resp.status_code in [403, 429, 406]:
+                    log.error(f"Blocked by Anti-Bot: Naukri returned status {resp.status_code}")
+                    await _notify(on_progress, f"Naukri Scraper: Blocked by Anti-Bot (HTTP {resp.status_code}) on page {page}.")
+                    raise RuntimeError("Blocked by Anti-Bot")
+                
                 html = resp.text
-                titles = re.findall(r'"title"\s*:\s*"([^"]+)"', html)
-                companies = re.findall(r'"companyName"\s*:\s*"([^"]+)"', html)
-                urls = re.findall(r'"jdURL"\s*:\s*"([^"]+)"', html)
-                locations_list = re.findall(r'"placeVal"\s*:\s*"([^"]+)"', html)
-
+                
+                # 4. ADD DATA VERIFICATION
+                # Anti-bot detection checks on the response content
+                is_blocked = False
+                if len(html) < 15000:
+                    is_blocked = True
+                elif any(term in html.lower() for term in ["captcha", "cloudflare", "recaptcha", "security check", "ddos", "shield", "robot", "blocked by"]):
+                    is_blocked = True
+                elif "validationErrors" in html or '"statusCode":406' in html:
+                    is_blocked = True
+                elif "jobDetails" in html and '"jobDetails":[]' in html:
+                    # Next.js fallback because client-side API loading was triggered instead of server-side data loading
+                    is_blocked = True
+                    
+                if is_blocked:
+                    log.error("Blocked by Anti-Bot: Anti-Bot protection detected on page.")
+                    await _notify(on_progress, f"Naukri Scraper: Blocked by Anti-Bot on page {page}.")
+                    raise RuntimeError("Blocked by Anti-Bot")
+                
+                soup = BeautifulSoup(html, "html.parser")
                 page_jobs = 0
-                for t, c, u, loc in zip(titles[:20], companies[:20], urls[:20], locations_list[:20]):
-                    try:
-                        clean_title = re.sub(r'\\u[0-9a-fA-F]{4}', '', t).strip()
-                        clean_company = re.sub(r'\\u[0-9a-fA-F]{4}', '', c).strip()
-                        clean_loc = re.sub(r'\\u[0-9a-fA-F]{4}', '', loc).strip()
-                        
-                        job_url = u
-                        if not job_url.startswith("http"):
-                            if job_url.startswith("/"):
-                                job_url = f"https://www.naukri.com{job_url}"
-                            else:
-                                job_url = f"https://www.naukri.com/{job_url}"
-                        if "naukri.com" not in job_url.lower():
-                            job_url = url
 
-                        jobs.append(make_job(
-                            title=clean_title,
-                            company=clean_company,
-                            location=clean_loc or "India",
-                            salary="",
-                            url=job_url,
-                            source="NAUKRI",
-                        ))
-                        page_jobs += 1
-                    except Exception as inner_e:
-                        log.warning(f"Failed parsing Naukri item: {inner_e}")
-                        continue
+                # Strategy A: Parse window.__INITIAL_STATE__ if it exists in script tags
+                initial_state_found = False
+                for script in soup.find_all("script"):
+                    if script.string and "window.__INITIAL_STATE__" in script.string:
+                        try:
+                            json_match = re.search(r"window\.__INITIAL_STATE__\s*=\s*({.*?});", script.string)
+                            if not json_match:
+                                json_match = re.search(r"window\.__INITIAL_STATE__\s*=\s*({.*})", script.string)
+                                
+                            if json_match:
+                                state_data = json.loads(json_match.group(1))
+                                srp_state = state_data.get("srpState", {})
+                                search_resp = srp_state.get("searchResp", {})
+                                raw_jobs = search_resp.get("jobDetails", [])
+                                if not raw_jobs:
+                                    for key, val in state_data.items():
+                                        if isinstance(val, dict) and "jobDetails" in val:
+                                            raw_jobs = val.get("jobDetails", [])
+                                            break
+                                            
+                                if raw_jobs:
+                                    initial_state_found = True
+                                    for j in raw_jobs[:20]:
+                                        try:
+                                            title = j.get("title", "")
+                                            company = j.get("companyName", "Unknown")
+                                            job_url = j.get("jdURL", "")
+                                            loc = j.get("placeVal", location or "India")
+                                            salary = j.get("salaryVal", "")
+                                            skills = [s.get("name", "") for s in j.get("tagsAndSkillsList", []) if s.get("name")]
+                                            
+                                            if not title:
+                                                continue
+                                                
+                                            if not job_url.startswith("http"):
+                                                if job_url.startswith("/"):
+                                                    job_url = f"https://www.naukri.com{job_url}"
+                                                else:
+                                                    job_url = f"https://www.naukri.com/{job_url}"
+                                            
+                                            jobs.append(make_job(
+                                                title=title,
+                                                company=company,
+                                                location=loc,
+                                                salary=salary,
+                                                url=job_url,
+                                                source="NAUKRI",
+                                                skills=skills,
+                                            ))
+                                            page_jobs += 1
+                                        except Exception as inner_e:
+                                            log.warning(f"Failed parsing item from INITIAL_STATE: {inner_e}")
+                        except Exception as e:
+                            log.warning(f"Failed parsing INITIAL_STATE script: {e}")
+                
+                # Strategy B: DOM / BeautifulSoup Selector parsing (3. UPDATE VULNERABLE DOM SELECTORS)
+                if not initial_state_found or page_jobs == 0:
+                    # Look for structural job containers or data-job-id attributes
+                    containers = soup.find_all(lambda tag: tag.name in ["div", "article"] and (
+                        (tag.get("class") and any("srp-job-tuple" in c or "job-tuple" in c or "jobtuple" in c for c in tag.get("class"))) or 
+                        tag.has_attr("data-job-id")
+                    ))
+                    
+                    if not containers:
+                        containers = soup.find_all("div", class_=lambda x: x and "srp-jobtuple" in x)
+                        
+                    if not containers:
+                        job_links = soup.find_all("a", href=lambda x: x and "/job-listings-" in x)
+                        seen_parents = set()
+                        for link in job_links:
+                            parent = link.parent
+                            while parent and parent.name not in ["div", "article", "body"]:
+                                if parent.name in ["div", "article"]:
+                                    break
+                                parent = parent.parent
+                            if parent and parent not in seen_parents:
+                                seen_parents.add(parent)
+                                containers.append(parent)
+                    
+                    for container in containers:
+                        try:
+                            title_el = container.find("a", href=lambda x: x and "/job-listings-" in x)
+                            if not title_el:
+                                title_el = container.find("a", class_=lambda x: x and "title" in x.lower())
+                            if not title_el:
+                                title_el = container.find(["h1", "h2", "h3", "h4", "a"])
+                                
+                            if not title_el:
+                                continue
+                                
+                            title = title_el.get_text(strip=True)
+                            job_url = title_el.get("href", "")
+                            
+                            comp_el = container.find(class_=lambda x: x and ("comp-name" in x.lower() or "company" in x.lower() or "org" in x.lower()))
+                            if not comp_el:
+                                comp_el = container.find("a", href=lambda x: x and "careers" in x)
+                            company = comp_el.get_text(strip=True) if comp_el else "Unknown Company"
+                            
+                            loc_el = container.find(class_=lambda x: x and ("loc" in x.lower() or "place" in x.lower()))
+                            loc = loc_el.get_text(strip=True) if loc_el else (location or "India")
+                            
+                            sal_el = container.find(class_=lambda x: x and "salary" in x.lower())
+                            salary = sal_el.get_text(strip=True) if sal_el else ""
+                            
+                            skills_el = container.find_all(class_=lambda x: x and "skill" in x.lower())
+                            skills = [s.get_text(strip=True) for s in skills_el if s.get_text(strip=True)]
+                            
+                            if not job_url:
+                                continue
+                                
+                            if not job_url.startswith("http"):
+                                if job_url.startswith("/"):
+                                    job_url = f"https://www.naukri.com{job_url}"
+                                else:
+                                    job_url = f"https://www.naukri.com/{job_url}"
+                                    
+                            jobs.append(make_job(
+                                title=title,
+                                company=company,
+                                location=loc,
+                                salary=salary,
+                                url=job_url,
+                                source="NAUKRI",
+                                skills=skills,
+                            ))
+                            page_jobs += 1
+                        except Exception as inner_e:
+                            log.warning(f"Failed parsing BeautifulSoup container: {inner_e}")
+                            continue
+
+                # Strategy C: Regex-based fallback parsing
+                if page_jobs == 0:
+                    titles = re.findall(r'"title"\s*:\s*"([^"]+)"', html)
+                    companies = re.findall(r'"companyName"\s*:\s*"([^"]+)"', html)
+                    urls = re.findall(r'"jdURL"\s*:\s*"([^"]+)"', html)
+                    locations_list = re.findall(r'"placeVal"\s*:\s*"([^"]+)"', html)
+                    
+                    for t, c, u, loc in zip(titles[:20], companies[:20], urls[:20], locations_list[:20]):
+                        try:
+                            clean_title = re.sub(r'\\u[0-9a-fA-F]{4}', '', t).strip()
+                            clean_company = re.sub(r'\\u[0-9a-fA-F]{4}', '', c).strip()
+                            clean_loc = re.sub(r'\\u[0-9a-fA-F]{4}', '', loc).strip()
+                            
+                            job_url = u
+                            if not job_url.startswith("http"):
+                                if job_url.startswith("/"):
+                                    job_url = f"https://www.naukri.com{job_url}"
+                                else:
+                                    job_url = f"https://www.naukri.com/{job_url}"
+                            if "naukri.com" not in job_url.lower():
+                                job_url = url
+                                
+                            jobs.append(make_job(
+                                title=clean_title,
+                                company=clean_company,
+                                location=clean_loc or "India",
+                                salary="",
+                                url=job_url,
+                                source="NAUKRI",
+                            ))
+                            page_jobs += 1
+                        except Exception as inner_e:
+                            log.warning(f"Failed regex parsing fallback item: {inner_e}")
+                            continue
                 
                 # Checkpoint progress after page is scraped successfully
                 save_checkpoint(keyword=role, current_page=page, platform="naukri")
@@ -439,6 +610,8 @@ async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_p
                     
                 await asyncio.sleep(1.0)
         except Exception as e:
+            if str(e) == "Blocked by Anti-Bot":
+                raise
             log.error(f"Naukri crawl failed on page {page}: {e}")
             break
             

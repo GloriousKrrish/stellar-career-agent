@@ -50,8 +50,8 @@ from agents.coach_agent import CareerCoachAgent
 from agents.scoring_agent import MatchScoringAgent
 from agents.application_agent import ApplicationAgent
 from fastapi import Header
-import supabase_client
-from auth import RegisterRequest, LoginRequest, register_user, login_user, get_user_by_token
+from auth import RegisterRequest, LoginRequest, register_user, login_user, get_user_by_token, GoogleLoginRequest, google_auth_user
+
 
 log = get_logger("API")
 settings = get_settings()
@@ -751,6 +751,16 @@ async def api_login(req: LoginRequest):
         return {"token": token, "user": user}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/auth/google", tags=["Auth"])
+async def api_google_auth(req: GoogleLoginRequest):
+    try:
+        token, user = google_auth_user(req.token, req.name, req.email)
+        return {"token": token, "user": user}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 
 @app.get("/api/auth/me", tags=["Auth"])
