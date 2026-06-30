@@ -629,10 +629,14 @@ async def fetch_glassdoor(role: str, location: str = "", start_page: int = 1, ma
         "Accept-Language": "en-US,en;q=0.9",
     }
     
-    search_term = role
+    clean_role = re.sub(r'[^a-zA-Z0-9\s-]', '', role)
+    encoded_role = re.sub(r'[-\s]+', '-', clean_role).strip('-').lower()
     if location:
-        search_term = f"{role} {location}"
-    encoded_query = search_term.replace(" ", "-").lower()
+        clean_loc = re.sub(r'[^a-zA-Z0-9\s-]', '', location)
+        encoded_loc = re.sub(r'[-\s]+', '-', clean_loc).strip('-').lower()
+        encoded_query = f"{encoded_role}-{encoded_loc}"
+    else:
+        encoded_query = encoded_role
 
     for page in range(start_page, max_pages + 1):
         if page == 1:
@@ -808,6 +812,7 @@ async def search_jobs_resilient(
     firecrawl_key: str = "",
     rapidapi_key: str = "",
     on_progress: Callable[[str], Any] | None = None,
+    direct_search: bool = False,
 ) -> tuple[list[dict], str]:
     """
     Search Glassdoor, Naukri, RemoteOK, and Arbeitnow. Falls back to high-quality demo
@@ -853,7 +858,7 @@ async def search_jobs_resilient(
         log.warning(f"Direct Glassdoor crawl failed: {e}")
 
     # 4. Fallback to RemoteOK API if still empty
-    if not all_jobs:
+    if not all_jobs and not direct_search:
         try:
             log.info("Trying RemoteOK API")
             ro_jobs = await fetch_remoteok(role, on_progress)
@@ -864,7 +869,7 @@ async def search_jobs_resilient(
             log.warning(f"RemoteOK API failed: {e}")
 
     # 5. Fallback to Arbeitnow API if still empty
-    if not all_jobs:
+    if not all_jobs and not direct_search:
         try:
             log.info("Trying Arbeitnow API")
             an_jobs = await fetch_arbeitnow(role, location, on_progress)
@@ -875,7 +880,7 @@ async def search_jobs_resilient(
             log.warning(f"Arbeitnow API failed: {e}")
 
     # 6. Fallback to high-quality demo jobs if still empty
-    if not all_jobs:
+    if not all_jobs and not direct_search:
         await _notify(on_progress, "Live crawling returned 0 results. Activating high-quality demo fallback dataset...")
         all_jobs = get_demo_jobs(role, location)
         provider_used = "Demo Fallback Dataset"

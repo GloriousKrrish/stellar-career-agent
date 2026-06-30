@@ -379,7 +379,7 @@ function JobsPage() {
                 <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
                 <div>
                   <span className="font-semibold">Search temporarily unavailable.</span>
-                  <p className="text-xs text-muted-foreground mt-1">Both Glassdoor and Naukri web queries failed to fetch listing data. Please check your connectivity or try again in a moment.</p>
+                  <p className="text-xs text-muted-foreground mt-1">{directError}</p>
                 </div>
               </div>
             )}

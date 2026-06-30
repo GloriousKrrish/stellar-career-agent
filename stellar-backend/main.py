@@ -432,13 +432,32 @@ async def direct_job_search(
     salary_target = request.salary_target.strip()
 
     # Search using the resilient multi-provider pipeline
-    all_jobs_raw, provider_used = await search_jobs_resilient(
-        role=role,
-        location=location,
-        salary_target=salary_target,
-        firecrawl_key=settings.firecrawl_api_key,
-        rapidapi_key="",
-    )
+    try:
+        all_jobs_raw, provider_used = await search_jobs_resilient(
+            role=role,
+            location=location,
+            salary_target=salary_target,
+            firecrawl_key=settings.firecrawl_api_key,
+            rapidapi_key="",
+            direct_search=True,
+        )
+    except Exception as e:
+        log.error(f"Direct job search crawler error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail="Naukri search failed due to access restriction; please check logs"
+        )
+
+    # Filter to ensure only NAUKRI or GLASSDOOR jobs are returned, completely stripping out any others
+    allowed_sources = {"naukri", "glassdoor"}
+    all_jobs_raw = [j for j in all_jobs_raw if j.get("source", "").lower() in allowed_sources]
+
+    if not all_jobs_raw:
+        raise HTTPException(
+            status_code=502,
+            detail="Naukri search failed due to access restriction; please check logs"
+        )
+
     log.info(f"Direct search got {len(all_jobs_raw)} jobs from {provider_used}")
 
     # Role Matching — filter jobs where title contains at least one role keyword
