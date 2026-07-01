@@ -307,7 +307,7 @@ class AutoApplyAgent:
             )
 
             # Inject stealth scripts to mask webdriver detection
-            await context.add_init_script("""
+            await context.add_init_script(""" 
                 // Override navigator.webdriver
                 Object.defineProperty(navigator, 'webdriver', { get: () => false });
                 // Override chrome.runtime to prevent detection

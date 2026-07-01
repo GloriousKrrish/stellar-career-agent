@@ -203,6 +203,10 @@ function JobsPage() {
     async function loadInitial() {
       try {
         let runId = localStorage.getItem("aria.active_run_id");
+        if (runId === "manual_enqueue") {
+          localStorage.removeItem("aria.active_run_id");
+          runId = null;
+        }
         if (!runId) {
           const workflowsRes = await api.getWorkflows();
           if (workflowsRes.workflows && workflowsRes.workflows.length > 0) {
