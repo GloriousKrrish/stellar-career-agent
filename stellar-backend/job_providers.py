@@ -131,8 +131,9 @@ async def fetch_firecrawl(role: str, location: str, firecrawl_key: str, on_progr
                 for j in raw_jobs[:20]:
                     if not j.get("title"):
                         continue
-                    job_url = j.get("url", "")
-                    if not job_url or "naukri.com" not in job_url.lower():
+                    # Ensure absolute and clean deep URL structure
+                    job_url = clean_naukri_url(j.get("url", ""))
+                    if not job_url:
                         job_url = naukri_url
 
                     jobs.append(make_job(
@@ -385,10 +386,11 @@ def clean_naukri_url(url_str: str) -> str:
         else:
             clean_url = f"https://{clean_url}"
     else:
-        return ""
+        # Fallback if it is just a relative url path like "job-listings-..."
+        clean_url = f"https://www.naukri.com/{clean_url}"
             
-    # Restrict to valid job listing pages (must contain /job-listings-)
-    if "/job-listings-" not in clean_url:
+    # Restrict to valid job listing pages (must contain /job-listings- or /job/)
+    if "job-listings-" not in clean_url and "/job/" not in clean_url:
         return ""
         
     return clean_url
@@ -545,10 +547,22 @@ async def fetch_naukri(role: str, location: str = "", start_page: int = 1, max_p
                     for container in containers:
                         try:
                             # Force it to target the unique job title anchor tag explicitly
-                            # title typically has class "title" or "job-title-anchor"
-                            title_el = container.find("a", class_=lambda x: x and any(cls in x.lower() for cls in ["title", "job-title-anchor"]))
+                            title_el = None
+                            for selector in ["a.title", "a.job-title-anchor", "a.jobtuple-title-link", "a.job-title"]:
+                                title_el = container.select_one(selector)
+                                if title_el and title_el.get("href"):
+                                    href = title_el.get("href", "").lower()
+                                    if "careers" not in href and "company" not in href and "org" not in href:
+                                        break
+                                    else:
+                                        title_el = None
+                            
                             if not title_el:
-                                title_el = container.find("a", href=lambda x: x and "/job-listings-" in x)
+                                for a in container.find_all("a", href=True):
+                                    href = a.get("href", "")
+                                    if "/job-listings-" in href:
+                                        title_el = a
+                                        break
                                 
                             if not title_el:
                                 continue
