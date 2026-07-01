@@ -286,21 +286,132 @@ async def _emit_autoapply_event(
     log.info(f"[AutoApply] [{run_id[:8]}] {message}")
 
 
-# ── Orchestrator Background Loop ─────────────────────────────────────────────
+async def process_single_autoapply_job(entry: dict) -> None:
+    """Execute the full auto-apply browser automation process for a single queued entry."""
+    from agents.auto_apply_agent import AutoApplyAgent
+    from models import AgentStatus
+    from config import get_settings
+    import db as database
+
+    agent = AutoApplyAgent()
+    queue_id = entry["id"]
+    run_id = entry["run_id"]
+    user_id = entry["user_id"]
+
+    # Claim the job
+    db_mark_as_queued(queue_id)
+
+    # Resolve user profile
+    user_data = database.get_user_by_id(user_id)
+    if not user_data:
+        db_update_queue_status(queue_id, "failed", failure_reason="User profile not found")
+        await _emit_autoapply_event(run_id, "log", f"⚠️ Skipped {entry['job_title']}: user profile missing")
+        return
+
+    user_profile = UserProfile(
+        id=user_data["id"],
+        name=user_data.get("name", ""),
+        email=user_data.get("email", ""),
+        phone=user_data.get("phone", ""),
+        location=user_data.get("location", ""),
+        skills=user_data.get("skills", []) if isinstance(user_data.get("skills"), list) else [],
+        linkedin=user_data.get("linkedin", ""),
+        github=user_data.get("github", ""),
+        summary=user_data.get("summary", ""),
+        work_history=user_data.get("work_history", []) if isinstance(user_data.get("work_history"), list) else [],
+    )
+
+    # Find resume file
+    resume_path = ""
+    settings = get_settings()
+    run_id_for_resume = user_data.get("run_id", "")
+    if run_id_for_resume:
+        upload_dir = settings.upload_dir
+        for f in os.listdir(upload_dir) if os.path.isdir(upload_dir) else []:
+            if run_id_for_resume in f:
+                resume_path = os.path.join(upload_dir, f)
+                break
+
+    # Emit progress
+    await _emit_autoapply_event(
+        run_id, "progress",
+        f"🤖 AutoApply starting: {entry['job_title']} @ {entry['job_company']}",
+        {"job_id": entry["job_id"], "queue_id": queue_id}
+    )
+
+    # Update agent status board
+    store.update_agent_status(AgentStatus(
+        agent_id="autoapply",
+        name="AutoApply Agent",
+        status="active",
+        current_task=f"Applying to {entry['job_title']} @ {entry['job_company']}",
+    ))
+
+    # Execute the application
+    async def on_progress(msg: str):
+        await _emit_autoapply_event(run_id, "log", f"[AutoApply] {msg}")
+
+    result = await agent.apply_to_job(
+        task_id=queue_id,
+        job_url=entry["job_url"],
+        job_title=entry["job_title"],
+        job_company=entry["job_company"],
+        user=user_profile,
+        resume_path=resume_path,
+        on_progress=on_progress,
+    )
+
+    # Update database with result
+    status = result.get("status", "failed")
+    db_update_queue_status(
+        queue_id=queue_id,
+        status=status,
+        failure_reason=result.get("reason", ""),
+        screenshot_path=result.get("screenshot", ""),
+        fields_filled=result.get("fields_filled", 0),
+        ats_platform=result.get("ats_platform", ""),
+    )
+
+    # Update the applications table if successfully applied
+    if status == "applied":
+        try:
+            database.db_save_application({
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "job_id": entry["job_id"],
+                "title": entry["job_title"],
+                "company": entry["job_company"],
+                "company_logo": entry["job_company"][0].upper() if entry["job_company"] else "?",
+                "stage": "applied",
+                "location": "",
+                "salary": "",
+                "url": entry["job_url"],
+                "updated_at": datetime.utcnow().isoformat(),
+            })
+        except Exception as e:
+            log.error(f"Failed to save applied application: {e}")
+
+    # Emit result event
+    event_type = "agent_update" if status == "applied" else "log"
+    emoji = {"applied": "✅", "requires_manual_intervention": "⚠️", "failed": "❌", "simulated": "🔄"}.get(status, "ℹ️")
+    await _emit_autoapply_event(
+        run_id, event_type,
+        f"{emoji} {entry['job_title']} @ {entry['job_company']}: {status.replace('_', ' ').title()}",
+        {"status": status, "job_id": entry["job_id"], "reason": result.get("reason", "")}
+    )
+
+    # Reset agent status
+    store.update_agent_status(AgentStatus(
+        agent_id="autoapply",
+        name="AutoApply Agent",
+        status="idle",
+    ))
+
 
 async def run_orchestrator_loop() -> None:
     """
     Persistent background task that polls the auto_apply_queue and dispatches
     the AutoApplyAgent worker for each discovered job.
-
-    Lifecycle:
-    1. Poll DB for jobs with status='discovered'
-    2. Claim them by setting status='queued'
-    3. Resolve the user profile from DB
-    4. Dispatch AutoApplyAgent.apply_to_job()
-    5. Update DB with result status
-    6. Stream events to frontend via WebSocket
-    7. Wait for cooldown, then repeat
     """
     from agents.auto_apply_agent import AutoApplyAgent
 
@@ -314,8 +425,6 @@ async def run_orchestrator_loop() -> None:
         db_init_auto_apply_table()
     except Exception as e:
         log.error(f"Failed to initialize auto_apply_queue table: {e}")
-
-    agent = AutoApplyAgent()
 
     while True:
         try:
@@ -337,121 +446,7 @@ async def run_orchestrator_loop() -> None:
 
             async def process_job(entry: dict) -> None:
                 async with semaphore:
-                    queue_id = entry["id"]
-                    run_id = entry["run_id"]
-                    user_id = entry["user_id"]
-
-                    # Claim the job
-                    db_mark_as_queued(queue_id)
-
-                    # Resolve user profile
-                    user_data = database.get_user_by_id(user_id)
-                    if not user_data:
-                        db_update_queue_status(queue_id, "failed", failure_reason="User profile not found")
-                        await _emit_autoapply_event(run_id, "log", f"⚠️ Skipped {entry['job_title']}: user profile missing")
-                        return
-
-                    user_profile = UserProfile(
-                        id=user_data["id"],
-                        name=user_data.get("name", ""),
-                        email=user_data.get("email", ""),
-                        phone=user_data.get("phone", ""),
-                        location=user_data.get("location", ""),
-                        skills=user_data.get("skills", []) if isinstance(user_data.get("skills"), list) else [],
-                        linkedin=user_data.get("linkedin", ""),
-                        github=user_data.get("github", ""),
-                        summary=user_data.get("summary", ""),
-                        work_history=user_data.get("work_history", []) if isinstance(user_data.get("work_history"), list) else [],
-                    )
-
-                    # Find resume file
-                    resume_path = ""
-                    from config import get_settings
-                    settings = get_settings()
-                    run_id_for_resume = user_data.get("run_id", "")
-                    if run_id_for_resume:
-                        upload_dir = settings.upload_dir
-                        for f in os.listdir(upload_dir) if os.path.isdir(upload_dir) else []:
-                            if run_id_for_resume in f:
-                                resume_path = os.path.join(upload_dir, f)
-                                break
-
-                    # Emit progress
-                    await _emit_autoapply_event(
-                        run_id, "progress",
-                        f"🤖 AutoApply starting: {entry['job_title']} @ {entry['job_company']}",
-                        {"job_id": entry["job_id"], "queue_id": queue_id}
-                    )
-
-                    # Update agent status board
-                    from models import AgentStatus
-                    store.update_agent_status(AgentStatus(
-                        agent_id="autoapply",
-                        name="AutoApply Agent",
-                        status="active",
-                        current_task=f"Applying to {entry['job_title']} @ {entry['job_company']}",
-                    ))
-
-                    # Execute the application
-                    async def on_progress(msg: str):
-                        await _emit_autoapply_event(run_id, "log", f"[AutoApply] {msg}")
-
-                    result = await agent.apply_to_job(
-                        task_id=queue_id,
-                        job_url=entry["job_url"],
-                        job_title=entry["job_title"],
-                        job_company=entry["job_company"],
-                        user=user_profile,
-                        resume_path=resume_path,
-                        on_progress=on_progress,
-                    )
-
-                    # Update database with result
-                    status = result.get("status", "failed")
-                    db_update_queue_status(
-                        queue_id=queue_id,
-                        status=status,
-                        failure_reason=result.get("reason", ""),
-                        screenshot_path=result.get("screenshot", ""),
-                        fields_filled=result.get("fields_filled", 0),
-                        ats_platform=result.get("ats_platform", ""),
-                    )
-
-                    # Update the applications table if successfully applied
-                    if status == "applied":
-                        try:
-                            database.db_save_application({
-                                "id": str(uuid.uuid4()),
-                                "user_id": user_id,
-                                "job_id": entry["job_id"],
-                                "title": entry["job_title"],
-                                "company": entry["job_company"],
-                                "company_logo": entry["job_company"][0].upper() if entry["job_company"] else "?",
-                                "stage": "applied",
-                                "location": "",
-                                "salary": "",
-                                "url": entry["job_url"],
-                                "updated_at": datetime.utcnow().isoformat(),
-                            })
-                        except Exception as e:
-                            log.error(f"Failed to save applied application: {e}")
-
-                    # Emit result event
-                    event_type = "agent_update" if status == "applied" else "log"
-                    emoji = {"applied": "✅", "requires_manual_intervention": "⚠️", "failed": "❌", "simulated": "🔄"}.get(status, "ℹ️")
-                    await _emit_autoapply_event(
-                        run_id, event_type,
-                        f"{emoji} {entry['job_title']} @ {entry['job_company']}: {status.replace('_', ' ').title()}",
-                        {"status": status, "job_id": entry["job_id"], "reason": result.get("reason", "")}
-                    )
-
-                    # Reset agent status
-                    store.update_agent_status(AgentStatus(
-                        agent_id="autoapply",
-                        name="AutoApply Agent",
-                        status="idle",
-                    ))
-
+                    await process_single_autoapply_job(entry)
                     # Cooldown between applications
                     await asyncio.sleep(APPLY_COOLDOWN_SECONDS)
 

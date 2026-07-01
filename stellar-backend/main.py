@@ -907,10 +907,14 @@ class ManualEnqueueRequest(BaseModel):
 @app.post("/api/autoapply/enqueue", tags=["AutoApply"])
 async def manual_enqueue_job(
     req: ManualEnqueueRequest,
+    background_tasks: BackgroundTasks,
     current_user: dict[str, Any] = Depends(get_current_user),
 ):
     """Manually enqueue a specific job for auto-application."""
-    from agents.orchestrator import db_enqueue_job
+    print(f"🚀 [AUTO-APPLY TRIGGER] Received manual apply request from user {current_user['id']} for job '{req.job_title}' at {req.job_company}")
+    
+    from agents.orchestrator import db_enqueue_job, process_single_autoapply_job
+    
     queue_id = db_enqueue_job(
         user_id=current_user["id"],
         run_id=req.run_id,
@@ -920,6 +924,26 @@ async def manual_enqueue_job(
         job_url=req.job_url,
         job_source=req.job_source,
     )
+    
+    # Prepare the dictionary matching the DB queue record format
+    new_entry = {
+        "id": queue_id,
+        "user_id": current_user["id"],
+        "run_id": req.run_id,
+        "job_id": req.job_id,
+        "job_title": req.job_title,
+        "job_company": req.job_company,
+        "job_url": req.job_url,
+        "job_source": req.job_source,
+        "status": "enqueued",
+        "attempts": 0,
+        "max_attempts": 3,
+    }
+    
+    # Trigger the agent worker task immediately in the background
+    background_tasks.add_task(process_single_autoapply_job, new_entry)
+    print(f"🔗 [AUTO-APPLY LAUNCHED] Spawned process_single_autoapply_job for task {queue_id[:8]} in the background")
+    
     return {
         "status": "enqueued",
         "queue_id": queue_id,

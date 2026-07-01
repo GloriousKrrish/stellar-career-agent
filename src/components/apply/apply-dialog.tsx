@@ -52,14 +52,16 @@ export function ApplyDialog({
     setErrorMsg("");
     try {
       const activeRunId = runId || localStorage.getItem("aria.active_run_id") || "manual_enqueue";
-      await api.enqueueForAutoApply({
+      const payload = {
         run_id: activeRunId,
         job_id: job.id,
         job_title: job.title,
         job_company: job.company,
         job_url: job.url || "",
         job_source: job.source || "Web",
-      });
+      };
+      console.log("Sending apply payload:", payload);
+      await api.enqueueForAutoApply(payload);
       setPhase("done");
     } catch (err: any) {
       console.error(err);
