@@ -2,6 +2,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Sparkles, Loader2, CheckCircle2, FileText, Mail, User2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useRouter } from "@tanstack/react-router";
 import type { Job } from "@/lib/types";
 import { getCurrentUser } from "@/lib/auth";
 import { api } from "@/lib/api";
@@ -17,6 +18,7 @@ export function ApplyDialog({
   runId: string | null;
   onClose: () => void;
 }) {
+  const router = useRouter();
   const [phase, setPhase] = useState<Phase>("drafting");
   const [note, setNote] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
@@ -61,7 +63,16 @@ export function ApplyDialog({
         job_source: job.source || "Web",
       };
       console.log("Sending apply payload:", payload);
+      
+      // Save active run ID to localStorage and fire custom event to wake up WebSocket stream
+      localStorage.setItem("aria.active_run_id", activeRunId);
+      window.dispatchEvent(new CustomEvent("aria:run_started", { detail: activeRunId }));
+      
       await api.enqueueForAutoApply(payload);
+      
+      // Invalidate active router layout to instantly reload Applications Board data
+      router.invalidate();
+      
       setPhase("done");
     } catch (err: any) {
       console.error(err);

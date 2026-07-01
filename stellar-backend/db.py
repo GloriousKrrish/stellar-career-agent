@@ -549,6 +549,17 @@ def db_get_application(app_id: str) -> Optional[dict]:
     conn.close()
     return dict(row) if row else None
 
+def db_get_application_by_job(user_id: str, job_id: str) -> Optional[dict]:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    if IS_POSTGRES:
+        cursor.execute("SELECT * FROM applications WHERE user_id = %s AND job_id = %s", (user_id, job_id))
+    else:
+        cursor.execute("SELECT * FROM applications WHERE user_id = ? AND job_id = ?", (user_id, job_id))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
 def db_delete_application(app_id: str) -> None:
     conn = get_db_connection()
     cursor = get_db_cursor(conn)

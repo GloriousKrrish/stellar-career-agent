@@ -375,19 +375,23 @@ async def process_single_autoapply_job(entry: dict) -> None:
     # Update the applications table if successfully applied
     if status == "applied":
         try:
+            existing = database.db_get_application_by_job(user_id, entry["job_id"])
+            app_id = existing["id"] if existing else str(uuid.uuid4())
+            
             database.db_save_application({
-                "id": str(uuid.uuid4()),
+                "id": app_id,
                 "user_id": user_id,
                 "job_id": entry["job_id"],
                 "title": entry["job_title"],
                 "company": entry["job_company"],
                 "company_logo": entry["job_company"][0].upper() if entry["job_company"] else "?",
                 "stage": "applied",
-                "location": "",
-                "salary": "",
+                "location": existing.get("location", "") if existing else "",
+                "salary": existing.get("salary", "") if existing else "",
                 "url": entry["job_url"],
                 "updated_at": datetime.utcnow().isoformat(),
             })
+            log.info(f"Transitioned job application {app_id[:8]} to 'applied' stage.")
         except Exception as e:
             log.error(f"Failed to save applied application: {e}")
 
