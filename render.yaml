@@ -1,5 +1,5 @@
 # Render.com deployment config for Stellar Backend (Python/FastAPI)
-# This file tells Render how to build and start the backend.
+# This file tells Render how to build and start the backend (FastAPI).
 
 services:
   - type: web
