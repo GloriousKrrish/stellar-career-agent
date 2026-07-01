@@ -312,7 +312,7 @@ async def run_job_search_workflow(
         state.raw_jobs = raw_jobs
         state.scored_jobs = scored
         state.status = "completed"
-        store.save_workflow(state)
+        store.save_workflow(state) 
 
         db.db_update_task_heartbeat(run_id, current_page=3, status="completed")
 
