@@ -484,13 +484,26 @@ def enqueue_discovered_jobs(
     """
     enqueued = 0
     for job in scored_jobs:
+        if isinstance(job, dict):
+            match_score = job.get("overall_match", 0)
+            job_url = job.get("url", "")
+            job_id = job.get("id", str(uuid.uuid4()))
+            job_title = job.get("title", "Unknown")
+            job_company = job.get("company", "Unknown")
+            job_source = job.get("source", "")
+        else:
+            match_score = getattr(job, "overall_match", 0)
+            job_url = getattr(job, "url", "")
+            job_id = getattr(job, "id", str(uuid.uuid4()))
+            job_title = getattr(job, "title", "Unknown")
+            job_company = getattr(job, "company", "Unknown")
+            job_source = getattr(job, "source", "")
+
         # Only auto-apply to jobs with sufficient match score
-        match_score = getattr(job, "overall_match", 0)
         if match_score < auto_apply_threshold:
             continue
 
         # Skip jobs without valid URLs
-        job_url = getattr(job, "url", "")
         if not job_url or job_url.startswith("https://jobs.example"):
             continue
 
@@ -498,11 +511,11 @@ def enqueue_discovered_jobs(
             db_enqueue_job(
                 user_id=user_id,
                 run_id=run_id,
-                job_id=getattr(job, "id", str(uuid.uuid4())),
-                job_title=getattr(job, "title", "Unknown"),
-                job_company=getattr(job, "company", "Unknown"),
+                job_id=job_id,
+                job_title=job_title,
+                job_company=job_company,
                 job_url=job_url,
-                job_source=getattr(job, "source", ""),
+                job_source=job_source,
             )
             enqueued += 1
         except Exception as e:

@@ -7,6 +7,7 @@ import { PageHeader } from "@/components/shell/sidebar";
 import { Stagger, StaggerItem, HoverLift } from "@/components/motion/primitives";
 import { api, API_BASE_URL } from "@/lib/api";
 import type { Job } from "@/lib/types";
+import { ApplyDialog } from "@/components/apply/apply-dialog";
 
 export const Route = createFileRoute("/app/jobs")({
   head: () => ({
@@ -18,7 +19,7 @@ export const Route = createFileRoute("/app/jobs")({
   component: JobsPage,
 });
 
-function JobCard({ job }: { job: Job }) {
+function JobCard({ job, onAutoApply }: { job: Job; onAutoApply: (job: Job) => void }) {
   const handleAddToApplications = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -96,6 +97,16 @@ function JobCard({ job }: { job: Job }) {
             <div className="mt-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <button
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onAutoApply(job);
+                  }}
+                  className="text-xs rounded-full bg-accent text-accent-foreground px-3 py-1.5 hover:opacity-90 font-medium cursor-pointer"
+                >
+                  Auto-Apply
+                </button>
+                <button
                   onClick={handleAddToApplications}
                   className="text-xs rounded-full bg-foreground text-background px-3 py-1.5 hover:opacity-90 cursor-pointer"
                 >
@@ -114,9 +125,9 @@ function JobCard({ job }: { job: Job }) {
                     target="_blank"
                     rel="noopener noreferrer"
                     onClick={(e) => e.stopPropagation()}
-                    className="text-xs rounded-full bg-accent text-accent-foreground px-3 py-1.5 hover:opacity-90 font-medium cursor-pointer"
+                    className="text-xs rounded-full border border-border px-3 py-1.5 hover:bg-muted text-foreground font-medium cursor-pointer"
                   >
-                    Apply Now
+                    Direct Link
                   </a>
                 )}
               </div>
@@ -143,6 +154,7 @@ function JobsPage() {
   const [q, setQ] = useState("");
   const [remote, setRemote] = useState<string[]>([]);
   const [exp, setExp] = useState<string[]>([]);
+  const [selectedJobForApply, setSelectedJobForApply] = useState<Job | null>(null);
 
   // Manual Crawler Search state
   const [searchRole, setSearchRole] = useState("");
@@ -461,7 +473,7 @@ function JobsPage() {
 
           <Stagger className="space-y-3">
             {filtered.map((j) => (
-              <StaggerItem key={j.id}><JobCard job={j} /></StaggerItem>
+              <StaggerItem key={j.id}><JobCard job={j} onAutoApply={setSelectedJobForApply} /></StaggerItem>
             ))}
             {filtered.length === 0 && (
               <div className="rounded-2xl border border-dashed border-border bg-card p-12 text-center text-muted-foreground">
@@ -478,6 +490,11 @@ function JobsPage() {
           </Stagger>
         </div>
       )}
+      <ApplyDialog
+        job={selectedJobForApply}
+        runId={activeRunId || localStorage.getItem("aria.active_run_id") || null}
+        onClose={() => setSelectedJobForApply(null)}
+      />
     </>
   );
 }

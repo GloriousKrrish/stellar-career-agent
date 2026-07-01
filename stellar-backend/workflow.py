@@ -254,6 +254,7 @@ async def run_job_search_workflow(
     location: str,
     remote_preference: str,
     limit: int = 20,
+    user_id: str | None = None,
 ) -> WorkflowState:
     """
     Lightweight workflow for quick job searches without a resume.
@@ -262,7 +263,9 @@ async def run_job_search_workflow(
     import db
     import json
 
+    uid = user_id or "job_seeker"
     dummy_profile = UserProfile(
+        id=uid,
         name="Job Seeker",
         summary=f"Looking for {role} opportunities",
         skills=[role],
@@ -331,6 +334,22 @@ async def run_job_search_workflow(
         store.save_workflow(state) 
 
         db.db_update_task_heartbeat(run_id, current_page=3, status="completed")
+
+        # ── Step 5: Enqueue for AutoApply ─────────────────────────────────────
+        try:
+            from agents.orchestrator import enqueue_discovered_jobs
+            enqueued = enqueue_discovered_jobs(
+                user_id=dummy_profile.id,
+                run_id=run_id,
+                scored_jobs=scored,
+                auto_apply_threshold=70,
+            )
+            if enqueued > 0:
+                await _emit(run_id, "agent_update", "AutoApply",
+                            f"Queued {enqueued} high-match jobs for autonomous application",
+                            {"enqueued": enqueued})
+        except Exception as e:
+            log.warning(f"AutoApply enqueue failed (non-fatal): {e}")
 
         await _emit(run_id, "completed", "Aria", f"Found {len(scored)} matched roles for '{role}'",
                     {"jobs": [j.model_dump(mode="json") for j in scored[:10]]})

@@ -4,12 +4,22 @@ import { X, Sparkles, Loader2, CheckCircle2, FileText, Mail, User2 } from "lucid
 import { useEffect, useState } from "react";
 import type { Job } from "@/lib/types";
 import { getCurrentUser } from "@/lib/auth";
+import { api } from "@/lib/api";
 
 type Phase = "drafting" | "ready" | "submitting" | "done";
 
-export function ApplyDialog({ job, onClose }: { job: Job | null; onClose: () => void }) {
+export function ApplyDialog({
+  job,
+  runId,
+  onClose,
+}: {
+  job: Job | null;
+  runId: string | null;
+  onClose: () => void;
+}) {
   const [phase, setPhase] = useState<Phase>("drafting");
   const [note, setNote] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
 
   const user = getCurrentUser() || {
     name: "Job Seeker",
@@ -23,6 +33,7 @@ export function ApplyDialog({ job, onClose }: { job: Job | null; onClose: () => 
     if (!job) return;
     setPhase("drafting");
     setNote("");
+    setErrorMsg("");
     const t = setTimeout(() => setPhase("ready"), 1400);
     return () => clearTimeout(t);
   }, [job]);
@@ -35,9 +46,26 @@ export function ApplyDialog({ job, onClose }: { job: Job | null; onClose: () => 
     ? `Hi ${job.company} team,\n\nI'm reaching out for the ${job.title} role. Over the last few years I've shipped ${(user.skills || []).slice(0, 2).join(" + ") || "software development"} work at the bar your team seems to demand. Three highlights:\n\n· Led a 0→1 surface that drove measurable retention wins.\n· Partnered cross-functionally weekly.\n· Mentored team members while staying hands-on in the codebase.\n\nI'd love to talk. — ${user.name}`
     : "";
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
+    if (!job) return;
     setPhase("submitting");
-    setTimeout(() => setPhase("done"), 1500);
+    setErrorMsg("");
+    try {
+      const activeRunId = runId || localStorage.getItem("aria.active_run_id") || "manual_enqueue";
+      await api.enqueueForAutoApply({
+        run_id: activeRunId,
+        job_id: job.id,
+        job_title: job.title,
+        job_company: job.company,
+        job_url: job.url || "",
+        job_source: job.source || "Web",
+      });
+      setPhase("done");
+    } catch (err: any) {
+      console.error(err);
+      setErrorMsg(err.message || "Failed to enqueue application.");
+      setPhase("ready");
+    }
   };
 
   return (
@@ -95,6 +123,12 @@ export function ApplyDialog({ job, onClose }: { job: Job | null; onClose: () => 
                     <p className="text-sm text-foreground/85 leading-relaxed">{summary}</p>
                   </div>
 
+                  {errorMsg && (
+                    <div className="rounded-2xl bg-red-500/10 border border-red-500/20 p-4 text-sm text-red-500">
+                      {errorMsg}
+                    </div>
+                  )}
+
                   <Section icon={<User2 className="h-3.5 w-3.5" />} title="Your profile">
                     <Row label="Name" value={user.name} />
                     <Row label="Email" value={user.email} />
@@ -130,7 +164,7 @@ export function ApplyDialog({ job, onClose }: { job: Job | null; onClose: () => 
               {phase === "submitting" && (
                 <div className="py-12 text-center">
                   <Loader2 className="h-6 w-6 animate-spin text-accent mx-auto" />
-                  <div className="mt-3 text-sm text-muted-foreground">Submitting application to {job.company}...</div>
+                  <div className="mt-3 text-sm text-muted-foreground">Queuing application with the AutoApply coordinator...</div>
                 </div>
               )}
 
@@ -139,9 +173,9 @@ export function ApplyDialog({ job, onClose }: { job: Job | null; onClose: () => 
                   <div className="mx-auto h-12 w-12 rounded-2xl bg-accent/15 text-accent flex items-center justify-center">
                     <CheckCircle2 className="h-6 w-6" />
                   </div>
-                  <h4 className="mt-4 font-display text-xl">Application submitted</h4>
+                  <h4 className="mt-4 font-display text-xl">Queued for Auto-Apply</h4>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    Tracking agent will watch for a response and ping you the moment something changes.
+                    The AutoApply Agent will process this application in the background. You can monitor the progress inside the AI Agents pipeline.
                   </p>
                 </div>
               )}

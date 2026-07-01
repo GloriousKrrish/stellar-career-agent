@@ -19,6 +19,7 @@ export const Route = createFileRoute("/app/jobs/$jobId")({
           const found = jobsRes.jobs?.find((j: any) => j.id === params.jobId);
           if (found) {
             return {
+              runId: w.run_id,
               job: {
                 id: found.id,
                 title: found.title,
@@ -55,7 +56,7 @@ export const Route = createFileRoute("/app/jobs/$jobId")({
 
     const job = getJob(params.jobId);
     if (!job) throw notFound();
-    return { job };
+    return { job, runId: null };
   },
   head: ({ loaderData }) => ({
     meta: [
@@ -73,7 +74,7 @@ export const Route = createFileRoute("/app/jobs/$jobId")({
 });
 
 function JobDetail() {
-  const { job } = Route.useLoaderData() as { job: Job };
+  const { job, runId } = Route.useLoaderData() as { job: Job; runId: string | null };
   const user = getCurrentUser() || {
     name: "Job Seeker",
     email: "",
@@ -268,7 +269,7 @@ function JobDetail() {
           </div>
         </aside>
       </div>
-      <ApplyDialog job={applyOpen ? job : null} onClose={() => setApplyOpen(false)} />
+      <ApplyDialog job={applyOpen ? job : null} runId={runId || null} onClose={() => setApplyOpen(false)} />
     </>
   );
 }

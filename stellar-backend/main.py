@@ -402,16 +402,22 @@ async def get_workflow_report(run_id: str):
 # ─── Jobs ─────────────────────────────────────────────────────────────────────
 
 @app.post("/api/jobs/search", tags=["Jobs"])
-async def search_jobs(request: JobSearchRequest, background_tasks: BackgroundTasks):
+async def search_jobs(
+    request: JobSearchRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict[str, Any] | None = Depends(get_current_user_optional),
+):
     """
     Quick job search without requiring a resume.
     Kicks off a lightweight discovery + scoring workflow.
     """
     run_id = str(uuid.uuid4())
+    user_id = current_user["id"] if current_user else None
     background_tasks.add_task(
         run_job_search_workflow,
         run_id, request.role, request.location,
         request.remote_preference, request.limit,
+        user_id,
     )
     return {
         "run_id": run_id,
