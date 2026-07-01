@@ -142,7 +142,8 @@ class LiveEvent(BaseModel):
     """Real-time event emitted over WebSocket."""
     run_id: str
     event_type: Literal["progress", "agent_update", "job_found", "match_scored",
-                        "action_required", "completed", "error", "log"]
+                        "action_required", "completed", "error", "log",
+                        "autoapply_queued", "autoapply_applied", "autoapply_failed"]
     agent: str = ""
     message: str = ""
     data: dict[str, Any] = {}

@@ -97,6 +97,7 @@ async def lifespan(app: FastAPI):
         ("scoring", "Match Scoring", "idle"),
         ("coach", "Career Coach", "active"),
         ("application", "Application Agent", "idle"),
+        ("autoapply", "AutoApply Agent", "idle"),
     ]:
         store.update_agent_status(AgentStatus(
             agent_id=agent_def[0],
@@ -114,11 +115,20 @@ async def lifespan(app: FastAPI):
     # Start the periodic heartbeat monitor background worker task
     app.state.heartbeat_monitor_task = asyncio.create_task(start_heartbeat_monitor())
 
+    # Start the AutoApply orchestrator background loop
+    from agents.orchestrator import run_orchestrator_loop
+    app.state.orchestrator_task = asyncio.create_task(run_orchestrator_loop())
+    log.info("AutoApply orchestrator background loop started")
+
     yield
 
     # Cancel heartbeat monitor on shutdown
     if hasattr(app.state, "heartbeat_monitor_task"):
         app.state.heartbeat_monitor_task.cancel()
+
+    # Cancel orchestrator on shutdown
+    if hasattr(app.state, "orchestrator_task"):
+        app.state.orchestrator_task.cancel()
 
     log.info("Stellar Career Agent API shutting down")
 
@@ -159,10 +169,10 @@ app.add_middleware(
 async def root():
     return {
         "service": "Stellar Career Agent API",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "status": "operational",
         "timestamp": datetime.utcnow().isoformat(),
-        "agents": 7,
+        "agents": 8,
     }
 
 
@@ -849,6 +859,66 @@ async def delete_application(
         raise HTTPException(status_code=404, detail="Application not found")
     db.db_delete_application(app_id)
     return {"status": "success", "message": "Application deleted"}
+
+
+# ─── AutoApply Queue Management ───────────────────────────────────────────────
+
+@app.get("/api/autoapply/stats", tags=["AutoApply"])
+async def get_autoapply_stats(current_user: dict[str, Any] = Depends(get_current_user)):
+    """Get aggregate statistics of the auto-apply pipeline for the current user."""
+    from agents.orchestrator import db_get_queue_stats
+    stats = db_get_queue_stats(user_id=current_user["id"])
+    return {
+        "stats": stats,
+        "total": sum(stats.values()),
+        "applied": stats.get("applied", 0),
+        "pending": stats.get("discovered", 0) + stats.get("queued", 0),
+        "manual": stats.get("requires_manual_intervention", 0),
+        "failed": stats.get("failed", 0),
+    }
+
+
+@app.get("/api/autoapply/queue", tags=["AutoApply"])
+async def get_autoapply_queue(
+    current_user: dict[str, Any] = Depends(get_current_user),
+    limit: int = 50,
+):
+    """Get the auto-apply queue entries for the current user."""
+    from agents.orchestrator import db_get_queue_entries
+    entries = db_get_queue_entries(user_id=current_user["id"], limit=limit)
+    return {"entries": entries, "total": len(entries)}
+
+
+class ManualEnqueueRequest(BaseModel):
+    run_id: str
+    job_id: str
+    job_title: str
+    job_company: str
+    job_url: str
+    job_source: str = ""
+
+
+@app.post("/api/autoapply/enqueue", tags=["AutoApply"])
+async def manual_enqueue_job(
+    req: ManualEnqueueRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """Manually enqueue a specific job for auto-application."""
+    from agents.orchestrator import db_enqueue_job
+    queue_id = db_enqueue_job(
+        user_id=current_user["id"],
+        run_id=req.run_id,
+        job_id=req.job_id,
+        job_title=req.job_title,
+        job_company=req.job_company,
+        job_url=req.job_url,
+        job_source=req.job_source,
+    )
+    return {
+        "status": "enqueued",
+        "queue_id": queue_id,
+        "message": f"Job '{req.job_title}' at {req.job_company} queued for auto-application.",
+    }
 
 
 # ─── Dev entry ────────────────────────────────────────────────────────────────

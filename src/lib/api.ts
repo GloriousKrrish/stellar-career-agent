@@ -185,5 +185,35 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ role, location, salary_target: salaryTarget }),
     });
-  }
+  },
+
+  // AutoApply Pipeline
+  async getAutoApplyStats() {
+    return request<{
+      stats: Record<string, number>;
+      total: number;
+      applied: number;
+      pending: number;
+      manual: number;
+      failed: number;
+    }>("/api/autoapply/stats");
+  },
+
+  async getAutoApplyQueue(limit: number = 50) {
+    return request<{ entries: any[]; total: number }>(`/api/autoapply/queue?limit=${limit}`);
+  },
+
+  async enqueueForAutoApply(data: {
+    run_id: string;
+    job_id: string;
+    job_title: string;
+    job_company: string;
+    job_url: string;
+    job_source?: string;
+  }) {
+    return request<{ status: string; queue_id: string; message: string }>("/api/autoapply/enqueue", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
 };

@@ -92,7 +92,7 @@ function AgentCard({ a }: { a: Agent }) {
 }
 
 function Workflow() {
-  const steps = ["Resume", "Discovery", "Matching", "Auto Apply", "Tracking", "Interview"];
+  const steps = ["Resume", "Discovery", "Matching", "Orchestrator", "Auto Apply", "Tracking", "Interview"];
   return (
     <div className="rounded-2xl border border-border bg-card p-6 shadow-soft">
       <div className="flex items-center justify-between mb-4">
@@ -123,7 +123,7 @@ function Workflow() {
 function AgentsPage() {
   return (
     <>
-      <PageHeader title="AI Agents" subtitle="Six specialists collaborating on your career, 24/7." />
+      <PageHeader title="AI Agents" subtitle="Eight specialists collaborating on your career, 24/7." />
       <Workflow />
       <Stagger className="mt-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {AGENTS.map((a) => (
