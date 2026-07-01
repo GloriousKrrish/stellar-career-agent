@@ -20,7 +20,7 @@ services:
       - key: APP_ENV
         value: production
       - key: FRONTEND_URL
-        sync: false
+        value: https://stellar-career-agent-main.vercel.app
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
