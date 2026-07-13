@@ -737,40 +737,65 @@ def db_get_agent_logs(user_id: str, limit: int = 50) -> list[dict]:
     return [dict(r) for r in rows]
 
 def db_get_dashboard_counts(user_id: str) -> dict:
+    import json
     conn = get_db_connection()
     cursor = get_db_cursor(conn)
     now_date = datetime.utcnow().strftime("%Y-%m-%d")
 
     counts = {}
     
-    # 1. Resume Agent
+    # 1. Resume Agent (workflows started / resume parsed)
     try:
         if IS_POSTGRES:
-            cursor.execute("SELECT count(*) FROM users")
-            total_users = cursor.fetchone()[0]
-            cursor.execute("SELECT count(*) FROM users WHERE created_at LIKE %s", (f"{now_date}%",))
-            today_users = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM workflows WHERE user_id = %s", (user_id,))
+            lifetime_resumes = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM workflows WHERE user_id = %s AND created_at LIKE %s", (user_id, f"{now_date}%"))
+            today_resumes = cursor.fetchone()[0]
         else:
-            cursor.execute("SELECT count(*) FROM users")
-            total_users = cursor.fetchone()[0]
-            cursor.execute("SELECT count(*) FROM users WHERE created_at LIKE ?", (f"{now_date}%",))
-            today_users = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM workflows WHERE user_id = ?", (user_id,))
+            lifetime_resumes = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM workflows WHERE user_id = ? AND created_at LIKE ?", (user_id, f"{now_date}%"))
+            today_resumes = cursor.fetchone()[0]
     except Exception:
-        total_users, today_users = 0, 0
-    counts["resume"] = {"today": max(1, today_users), "lifetime": max(12, total_users)}
+        lifetime_resumes, today_resumes = 0, 0
+    counts["resume"] = {"today": today_resumes, "lifetime": lifetime_resumes}
 
-    # 2. Discovery Agent
+    # 2. Discovery & Matching Agents (sum of scored jobs in workflows)
     try:
-        cursor.execute("SELECT count(*) FROM auto_apply_queue")
-        total_jobs = cursor.fetchone()[0]
+        if IS_POSTGRES:
+            cursor.execute("SELECT scored_jobs FROM workflows WHERE user_id = %s", (user_id,))
+        else:
+            cursor.execute("SELECT scored_jobs FROM workflows WHERE user_id = ?", (user_id,))
+        rows = cursor.fetchall()
+        total_discovered = 0
+        for r in rows:
+            try:
+                if r[0]:
+                    p = json.loads(r[0]) if isinstance(r[0], str) else r[0]
+                    total_discovered += len(p)
+            except Exception:
+                pass
+
+        if IS_POSTGRES:
+            cursor.execute("SELECT scored_jobs FROM workflows WHERE user_id = %s AND created_at LIKE %s", (user_id, f"{now_date}%"))
+        else:
+            cursor.execute("SELECT scored_jobs FROM workflows WHERE user_id = ? AND created_at LIKE ?", (user_id, f"{now_date}%"))
+        rows_today = cursor.fetchall()
+        today_discovered = 0
+        for r in rows_today:
+            try:
+                if r[0]:
+                    p = json.loads(r[0]) if isinstance(r[0], str) else r[0]
+                    today_discovered += len(p)
+            except Exception:
+                pass
     except Exception:
-        total_jobs = 0
-    counts["discovery"] = {"today": max(312, total_jobs * 2), "lifetime": max(18420, total_jobs * 10)}
+        total_discovered, today_discovered = 0, 0
+        
+    counts["discovery"] = {"today": today_discovered, "lifetime": total_discovered}
+    counts["matching"] = {"today": today_discovered, "lifetime": total_discovered}
 
-    # 3. Matching Agent
-    counts["matching"] = {"today": max(287, total_jobs), "lifetime": max(14102, total_jobs * 5)}
-
-    # 4. Agent Orchestrator
+    # 4. Agent Orchestrator (total queued auto applies)
     try:
         if IS_POSTGRES:
             cursor.execute("SELECT count(*) FROM auto_apply_queue WHERE user_id = %s", (user_id,))
@@ -784,9 +809,9 @@ def db_get_dashboard_counts(user_id: str) -> dict:
             today_q = cursor.fetchone()[0]
     except Exception:
         total_q, today_q = 0, 0
-    counts["orchestrator"] = {"today": max(47, today_q), "lifetime": max(1280, total_q)}
+    counts["orchestrator"] = {"today": today_q, "lifetime": total_q}
 
-    # 5. AutoApply Agent
+    # 5. AutoApply Agent (actually applied)
     try:
         if IS_POSTGRES:
             cursor.execute("SELECT count(*) FROM auto_apply_queue WHERE user_id = %s AND status = 'applied'", (user_id,))
@@ -800,22 +825,27 @@ def db_get_dashboard_counts(user_id: str) -> dict:
             today_applied = cursor.fetchone()[0]
     except Exception:
         total_applied, today_applied = 0, 0
-    counts["autoapply"] = {"today": max(14, today_applied), "lifetime": max(213, total_applied)}
+    counts["autoapply"] = {"today": today_applied, "lifetime": total_applied}
 
-    # 6. Tracking Agent
+    # 6. Tracking Agent (applications table)
     try:
         if IS_POSTGRES:
             cursor.execute("SELECT count(*) FROM applications WHERE user_id = %s", (user_id,))
             total_apps = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM applications WHERE user_id = %s AND updated_at LIKE %s", (user_id, f"{now_date}%"))
+            today_apps = cursor.fetchone()[0]
         else:
             cursor.execute("SELECT count(*) FROM applications WHERE user_id = ?", (user_id,))
             total_apps = cursor.fetchone()[0]
+            cursor.execute("SELECT count(*) FROM applications WHERE user_id = ? AND updated_at LIKE ?", (user_id, f"{now_date}%"))
+            today_apps = cursor.fetchone()[0]
     except Exception:
-        total_apps = 0
-    counts["tracking"] = {"today": max(6, today_applied), "lifetime": max(198, total_apps)}
+        total_apps, today_apps = 0, 0
+    counts["tracking"] = {"today": today_apps, "lifetime": total_apps}
 
     # 7. Interview Agent
-    counts["interview"] = {"today": 0, "lifetime": 47}
+    counts["interview"] = {"today": 0, "lifetime": 0}
 
     conn.close()
     return counts
+

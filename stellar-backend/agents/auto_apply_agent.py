@@ -74,6 +74,10 @@ UA_POOL = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
 ]
 
+# ── Cookie file path for authenticated session injection ───────────────────
+COOKIE_DIR = os.path.join(os.path.dirname(__file__), "..", "cookies")
+os.makedirs(COOKIE_DIR, exist_ok=True)
+
 
 async def _human_delay(min_ms: int = 800, max_ms: int = 3000) -> None:
     """Randomized delay to simulate human interaction cadence."""
@@ -206,6 +210,28 @@ class AutoApplyAgent:
 
     # ── Core Application Logic ────────────────────────────────────────────────
 
+    def _kill_orphaned_browsers(self) -> None:
+        """
+        Kill any orphaned Playwright chromium processes to prevent locked sessions
+        or memory leaks. Extremely safe as it only targets processes running from
+        the ms-playwright directory.
+        """
+        import psutil
+        log.info("Checking for orphaned Playwright chromium processes...")
+        killed_count = 0
+        for proc in psutil.process_iter(['pid', 'name', 'exe']):
+            try:
+                name = (proc.info.get('name') or '').lower()
+                exe = (proc.info.get('exe') or '').lower()
+                if 'chrome' in name or 'chromium' in name or 'playwright' in name:
+                    if 'ms-playwright' in exe:
+                        proc.kill()
+                        killed_count += 1
+            except Exception:
+                pass
+        if killed_count > 0:
+            log.info(f"Successfully force-killed {killed_count} orphaned Playwright processes.")
+
     async def apply_to_job(
         self,
         task_id: str,
@@ -283,64 +309,143 @@ class AutoApplyAgent:
         resume_path: str,
         on_progress: Optional[Callable] = None,
     ) -> dict[str, Any]:
-        """Execute the full browser automation pipeline using Playwright."""
+        """
+        Execute the full browser automation pipeline using Playwright.
+        
+        This method is wrapped in robust error handling so that ANY crash
+        during browser launch, navigation, or form interaction is caught,
+        reported with full stack trace to both the terminal and the WebSocket
+        feed, and returns a structured failure result.
+        """
+        import traceback
         from playwright.async_api import async_playwright
 
         viewport = random.choice(VIEWPORT_POOL)
         user_agent = random.choice(UA_POOL)
 
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=False,
-                slow_mo=1000,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
-            )
+        # ── Pre-launch URL sanity check ───────────────────────────────────────
+        if not job_url or not isinstance(job_url, str):
+            msg = f"Invalid job_url: '{job_url}' (type={type(job_url).__name__})"
+            log.error(f"[{task_id[:8]}] {msg}")
+            if on_progress:
+                await on_progress(f"❌ {msg}")
+            return {"status": "failed", "reason": msg, "screenshot": ""}
 
-            context = await browser.new_context(
-                viewport=viewport,
-                user_agent=user_agent,
-                locale="en-IN",
-                timezone_id="Asia/Kolkata",
-                # Mask automation signals
-                java_script_enabled=True,
-            )
+        parsed_url = urlparse(job_url)
+        if not parsed_url.scheme or not parsed_url.netloc:
+            msg = f"Malformed URL — missing scheme or host: '{job_url[:100]}'"
+            log.error(f"[{task_id[:8]}] {msg}")
+            if on_progress:
+                await on_progress(f"❌ {msg}")
+            return {"status": "failed", "reason": msg, "screenshot": ""}
 
-            # Inject stealth scripts to mask webdriver detection
-            await context.add_init_script(""" 
-                // Override navigator.webdriver
-                Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                // Override chrome.runtime to prevent detection
-                window.chrome = { runtime: {} };
-                // Override permissions
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) =>
-                    parameters.name === 'notifications'
-                        ? Promise.resolve({ state: Notification.permission })
-                        : originalQuery(parameters);
-                // Override plugins length
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5],
-                });
-                // Override languages
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en', 'hi'],
-                });
-            """)
+        log.info(f"[{task_id[:8]}] Pre-launch checks passed. URL={job_url}")
 
-            page = await context.new_page()
+        browser = None
+        context = None
+        page = None
 
+        try:
+            # ── Step 0: Launch browser ────────────────────────────────────────
+            if on_progress:
+                await on_progress("🧹 Checking and cleaning lingering browser processes...")
+            
             try:
+                self._kill_orphaned_browsers()
+            except Exception as kill_err:
+                log.warning(f"Failed to kill orphaned browsers: {kill_err}")
+
+            if on_progress:
+                await on_progress("🔧 Initializing Playwright browser engine...")
+
+            log.info(f"[{task_id[:8]}] Launching Playwright chromium...")
+
+            headless_env = os.getenv("AUTOAPPLY_HEADLESS", "false").lower()
+            headless_val = headless_env in ("true", "1", "yes")
+            slow_mo_val = int(os.getenv("AUTOAPPLY_SLOW_MO", "1500"))
+
+            async with async_playwright() as pw:
+                browser = await pw.chromium.launch(
+                    headless=headless_val,
+                    slow_mo=slow_mo_val,
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-accelerated-2d-canvas",
+                        "--disable-gpu",
+                        "--no-first-run",
+                        "--no-zygote",
+                        "--start-maximized",
+                    ],
+                )
+                log.info(f"[{task_id[:8]}] ✅ Browser launched successfully (headless={headless_val}, slow_mo={slow_mo_val})")
+
                 if on_progress:
-                    await on_progress("[AutoApplyAgent]: Navigating directly to target job detail view...")
+                    await on_progress("✅ Browser window opened — creating secure browsing context...")
+
+                context = await browser.new_context(
+                    viewport=viewport,
+                    user_agent=user_agent,
+                    locale="en-IN",
+                    timezone_id="Asia/Kolkata",
+                    java_script_enabled=True,
+                )
+
+                # Inject stealth scripts to mask webdriver detection
+                await context.add_init_script(""" 
+                    // Override navigator.webdriver
+                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                    // Override chrome.runtime to prevent detection
+                    window.chrome = { runtime: {} };
+                    // Override permissions
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) =>
+                        parameters.name === 'notifications'
+                            ? Promise.resolve({ state: Notification.permission })
+                            : originalQuery(parameters);
+                    // Override plugins length
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5],
+                    });
+                    // Override languages
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['en-US', 'en', 'hi'],
+                    });
+                """)
+
+                page = await context.new_page()
+                log.info(f"[{task_id[:8]}] Page created. Viewport: {viewport}")
+
+                # ── Cookie Injection: Import active authenticated sessions ────
+                try:
+                    await self._inject_cookies(context, job_url)
+                except Exception as cookie_err:
+                    log.warning(f"[{task_id[:8]}] Cookie injection skipped: {cookie_err}")
+
+                if on_progress:
+                    await on_progress(f"\U0001f680 Starting execution for: {job_title} @ {job_company}")
 
                 # ── Step 1: Navigate to job URL ───────────────────────────────
-                response = await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
-                await _human_delay(1500, 3000)
+                try:
+                    if on_progress:
+                        await on_progress(f"🔍 Navigating to: {job_url[:80]}...")
+                    log.info(f"[{task_id[:8]}] Navigating to {job_url}")
+                    response = await page.goto(job_url, wait_until="domcontentloaded", timeout=45000)
+                    log.info(f"[{task_id[:8]}] Navigation completed. Status: {response.status if response else 'N/A'}, Final URL: {page.url}")
+                    await _human_delay(2000, 4000)
+                except Exception as nav_err:
+                    error_detail = f"Navigation failed: {type(nav_err).__name__}: {str(nav_err)}"
+                    log.error(f"[{task_id[:8]}] {error_detail}")
+                    if on_progress:
+                        await on_progress(f"❌ {error_detail[:200]}")
+                    screenshot = await self._take_screenshot(page, task_id)
+                    return {
+                        "status": "failed",
+                        "reason": error_detail[:500],
+                        "screenshot": screenshot,
+                    }
 
                 # Check for redirect to external ATS
                 current_url = page.url
@@ -349,7 +454,7 @@ class AutoApplyAgent:
                     screenshot = await self._take_screenshot(page, task_id)
                     log.info(f"[{task_id[:8]}] Redirected to ATS: {ats_platform}")
                     if on_progress:
-                        await on_progress(f"[AutoApplyAgent]: Redirected to external ATS {ats_platform} — requires manual application")
+                        await on_progress(f"⚠️ Redirected to external ATS {ats_platform} — requires manual application")
                     return {
                         "status": "requires_manual_intervention",
                         "reason": f"Job redirected to external ATS: {ats_platform}",
@@ -359,13 +464,16 @@ class AutoApplyAgent:
                     }
 
                 # ── Step 2: Check for anti-bot blocks ─────────────────────────
-                page_text = await page.inner_text("body")
+                try:
+                    page_text = await page.inner_text("body")
+                except Exception:
+                    page_text = ""
                 blocker = self._is_blocked(page_text)
                 if blocker:
                     screenshot = await self._take_screenshot(page, task_id)
                     log.warning(f"[{task_id[:8]}] Blocked by: {blocker}")
                     if on_progress:
-                        await on_progress(f"[AutoApplyAgent]: Blocked by {blocker} — escalating to human review")
+                        await on_progress(f"⚠️ Blocked by {blocker} — escalating to human review")
                     return {
                         "status": "requires_manual_intervention",
                         "reason": f"Anti-bot protection detected: {blocker}",
@@ -373,7 +481,7 @@ class AutoApplyAgent:
                     }
 
                 if on_progress:
-                    await on_progress("[AutoApplyAgent]: Scanning for application form elements...")
+                    await on_progress("📋 Scanning page for application form elements...")
 
                 # ── Step 3: Find and click Apply button ───────────────────────
                 apply_clicked = await self._find_and_click_apply(page, task_id, on_progress)
@@ -381,7 +489,7 @@ class AutoApplyAgent:
                     screenshot = await self._take_screenshot(page, task_id)
                     log.info(f"[{task_id[:8]}] No Apply button found")
                     if on_progress:
-                        await on_progress("[AutoApplyAgent]: No standard Apply button detected — marking for manual review")
+                        await on_progress("⚠️ No standard Apply button detected — marking for manual review")
                     return {
                         "status": "requires_manual_intervention",
                         "reason": "Could not locate an Apply button on the job page",
@@ -396,7 +504,7 @@ class AutoApplyAgent:
                 if ats_platform:
                     screenshot = await self._take_screenshot(page, task_id)
                     if on_progress:
-                        await on_progress(f"[AutoApplyAgent]: Apply button redirected to external ATS {ats_platform}")
+                        await on_progress(f"⚠️ Apply button redirected to external ATS {ats_platform}")
                     return {
                         "status": "requires_manual_intervention",
                         "reason": f"Apply redirected to external ATS: {ats_platform}",
@@ -406,20 +514,29 @@ class AutoApplyAgent:
                     }
 
                 if on_progress:
-                    await on_progress("[AutoApplyAgent]: Form detected. Typing name and uploading resume binary...")
+                    await on_progress("✍️ Tailoring profile fields and attaching resume binary...")
 
                 # ── Step 4: Fill form fields ──────────────────────────────────
-                field_map = self._build_field_map(user)
-                fields_filled = await self._fill_form_fields(page, field_map, task_id)
+                try:
+                    field_map = self._build_field_map(user)
+                    fields_filled = await self._fill_form_fields(page, field_map, task_id)
+                except Exception as fill_err:
+                    log.warning(f"[{task_id[:8]}] Form fill error: {fill_err}")
+                    fields_filled = 0
 
                 if on_progress:
-                    await on_progress(f"[AutoApplyAgent]: Filled {fields_filled} form fields from profile data")
+                    await on_progress(f"✅ Filled {fields_filled} form fields from profile data")
 
                 # ── Step 5: Upload resume if file input exists ────────────────
                 if resume_path and os.path.isfile(resume_path):
-                    uploaded = await self._upload_resume(page, resume_path, task_id)
-                    if uploaded and on_progress:
-                        await on_progress("[AutoApplyAgent]: Resume file uploaded successfully")
+                    try:
+                        uploaded = await self._upload_resume(page, resume_path, task_id)
+                        if uploaded and on_progress:
+                            await on_progress("📄 Resume file uploaded successfully")
+                    except Exception as upload_err:
+                        log.warning(f"[{task_id[:8]}] Resume upload failed: {upload_err}")
+                        if on_progress:
+                            await on_progress(f"⚠️ Resume upload failed: {str(upload_err)[:80]}")
 
                 await _human_delay(1500, 3000)
 
@@ -427,7 +544,7 @@ class AutoApplyAgent:
                 screenshot = await self._take_screenshot(page, task_id)
 
                 if on_progress:
-                    await on_progress(f"[AutoApplyAgent]: Application form populated for {job_title} @ {job_company}")
+                    await on_progress(f"📸 Pre-submit screenshot captured for {job_title} @ {job_company}")
 
                 # ── Step 7: Attempt submit ────────────────────────────────────
                 submitted = False
@@ -435,8 +552,8 @@ class AutoApplyAgent:
                     if FULLY_AUTONOMOUS:
                         # Path A: Fully Autonomous Submission
                         if on_progress:
-                            await on_progress("[AutoApplyAgent]: Triggering fully autonomous submission...")
-                        
+                            await on_progress("\U0001f5b1\ufe0f Executing final application submission confirmation...")
+
                         submitted = await self._submit_form(page, task_id, on_progress)
                         if submitted:
                             try:
@@ -444,12 +561,12 @@ class AutoApplyAgent:
                             except Exception:
                                 pass
                             if on_progress:
-                                await on_progress("[AutoApplyAgent]: ✅ Application successfully submitted automatically!")
+                                await on_progress("✅ Application successfully submitted automatically!")
                     else:
                         # Path B: Safe Manual Review Pause
                         if on_progress:
                             await on_progress("[AutoApplyAgent]: ⏸️ Paused: Review the page in the browser window and click Submit manually.")
-                        
+
                         # Update queue status in database to PENDING_SUBMIT to reflect manual review state
                         try:
                             from agents.orchestrator import db_update_queue_status
@@ -475,13 +592,13 @@ class AutoApplyAgent:
                 except Exception as run_err:
                     log.error(f"[{task_id[:8]}] Exception in final submission step: {run_err}")
                     submitted = False
-                
+
                 if submitted:
                     await _human_delay(2000, 4000)
                     final_screenshot = await self._take_screenshot(page, task_id)
                     log.info(f"[{task_id[:8]}] Application submitted successfully")
                     if on_progress:
-                        await on_progress(f"[AutoApplyAgent]: ✅ Application submitted for {job_title} @ {job_company}")
+                        await on_progress(f"✅ Application submitted for {job_title} @ {job_company}")
                     return {
                         "status": "applied",
                         "reason": f"Successfully submitted application for {job_title} at {job_company}",
@@ -491,7 +608,7 @@ class AutoApplyAgent:
                 else:
                     log.info(f"[{task_id[:8]}] Form filled but submit button not found — manual review")
                     if on_progress:
-                        await on_progress("[AutoApplyAgent]: Form filled but could not confirm submission — needs manual verification")
+                        await on_progress("\u26a0\ufe0f Form filled but could not confirm submission — needs manual verification")
                     return {
                         "status": "requires_manual_intervention",
                         "reason": "Form populated but submit confirmation could not be verified",
@@ -499,17 +616,40 @@ class AutoApplyAgent:
                         "screenshot": screenshot,
                     }
 
-            except Exception as e:
-                screenshot = await self._take_screenshot(page, task_id)
-                log.error(f"[{task_id[:8]}] Browser error: {e}")
-                return {
-                    "status": "failed",
-                    "reason": str(e)[:500],
-                    "screenshot": screenshot,
-                }
-            finally:
-                await context.close()
-                await browser.close()
+        except Exception as e:
+            # ── Detailed crash handler ────────────────────────────────────────
+            tb_str = traceback.format_exc()
+            error_detail = f"{type(e).__name__}: {str(e)}"
+            log.error(f"[{task_id[:8]}] BROWSER PIPELINE CRASH:\n{tb_str}")
+            print(f"\n{'='*60}\nDETAILED RUNTIME FAILURE STACK (AutoApplyAgent._run_browser_application):\n{tb_str}{'='*60}", flush=True)
+
+            if on_progress:
+                await on_progress(f"❌ Browser automation crashed: {error_detail[:250]}")
+
+            screenshot = ""
+            if page:
+                try:
+                    screenshot = await self._take_screenshot(page, task_id)
+                except Exception:
+                    pass
+
+            return {
+                "status": "failed",
+                "reason": error_detail[:500],
+                "screenshot": screenshot,
+            }
+        finally:
+            # ── Always clean up browser resources ─────────────────────────────
+            try:
+                if context:
+                    await context.close()
+            except Exception:
+                pass
+            try:
+                if browser:
+                    await browser.close()
+            except Exception:
+                pass
 
     # ── DOM Interaction Helpers ────────────────────────────────────────────────
 
@@ -662,7 +802,7 @@ class AutoApplyAgent:
                 el = page.locator(selector).first
                 if await el.is_visible(timeout=2000):
                     if on_progress:
-                        await on_progress("[AutoApplyAgent]: Form fields verified. Triggering final application submission click...")
+                        await on_progress("🖱️ Form fields verified. Triggering final application submission click...")
                     await _human_delay(1000, 2500)
                     await el.click()
                     log.info(f"[{task_id[:8]}] Clicked submit: {selector}")
@@ -671,3 +811,91 @@ class AutoApplyAgent:
                 continue
 
         return False
+
+    # ── Cookie Injection for Authenticated Session Bypass ──────────────────
+
+    async def _inject_cookies(self, context: Any, job_url: str) -> None:
+        """
+        Import active authenticated session cookies for target domains,
+        bypassing login gates and OTP barriers completely.
+
+        Cookie files are stored as JSON arrays in the `cookies/` directory
+        with filenames matching the domain:
+          - cookies/naukri.json
+          - cookies/glassdoor.json
+          - cookies/linkedin.json
+
+        Each file should contain a JSON array of cookie objects with at minimum:
+          { "name": "...", "value": "...", "domain": "...", "path": "/" }
+
+        To export cookies from your browser, use a browser extension like
+        "EditThisCookie" and export as JSON.
+        """
+        import json
+        from urllib.parse import urlparse
+
+        parsed = urlparse(job_url)
+        domain = parsed.netloc.lower()
+
+        # Map domain fragments to cookie file names
+        domain_map = {
+            "naukri.com": "naukri.json",
+            "glassdoor.com": "glassdoor.json",
+            "glassdoor.co.in": "glassdoor.json",
+            "linkedin.com": "linkedin.json",
+            "indeed.com": "indeed.json",
+        }
+
+        cookie_file = None
+        for domain_key, filename in domain_map.items():
+            if domain_key in domain:
+                cookie_path = os.path.join(COOKIE_DIR, filename)
+                if os.path.isfile(cookie_path):
+                    cookie_file = cookie_path
+                break
+
+        if not cookie_file:
+            log.debug(f"No cookie file found for domain: {domain}")
+            return
+
+        try:
+            with open(cookie_file, "r", encoding="utf-8") as f:
+                cookies = json.load(f)
+
+            if not isinstance(cookies, list):
+                log.warning(f"Cookie file {cookie_file} is not a JSON array — skipping")
+                return
+
+            # Normalize cookies for Playwright's format
+            playwright_cookies = []
+            for c in cookies:
+                if not c.get("name") or not c.get("value"):
+                    continue
+                cookie_obj = {
+                    "name": c["name"],
+                    "value": c["value"],
+                    "domain": c.get("domain", f".{domain}"),
+                    "path": c.get("path", "/"),
+                }
+                # Add optional fields if present
+                if c.get("httpOnly") is not None:
+                    cookie_obj["httpOnly"] = bool(c["httpOnly"])
+                if c.get("secure") is not None:
+                    cookie_obj["secure"] = bool(c["secure"])
+                if c.get("sameSite"):
+                    ss = str(c["sameSite"]).capitalize()
+                    if ss in ("Strict", "Lax", "None"):
+                        cookie_obj["sameSite"] = ss
+
+                playwright_cookies.append(cookie_obj)
+
+            if playwright_cookies:
+                await context.add_cookies(playwright_cookies)
+                log.info(f"Injected {len(playwright_cookies)} cookies for {domain} from {cookie_file}")
+            else:
+                log.debug(f"Cookie file {cookie_file} contained no valid cookies")
+
+        except json.JSONDecodeError as e:
+            log.warning(f"Failed to parse cookie file {cookie_file}: {e}")
+        except Exception as e:
+            log.warning(f"Cookie injection failed for {domain}: {e}")

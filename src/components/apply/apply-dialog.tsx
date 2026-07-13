@@ -207,12 +207,23 @@ export function ApplyDialog({
                 </button>
               )}
               {phase === "done" && (
-                <button
-                  onClick={onClose}
-                  className="rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium hover:opacity-90"
-                >
-                  Done
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={onClose}
+                    className="rounded-full border border-border px-5 py-2 text-sm font-medium hover:bg-muted"
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={() => {
+                      onClose();
+                      router.navigate({ to: "/app/agents" });
+                    }}
+                    className="rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium hover:opacity-90"
+                  >
+                    Track Agent Progress
+                  </button>
+                </div>
               )}
             </footer>
           </motion.div>

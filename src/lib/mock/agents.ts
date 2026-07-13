@@ -1,5 +1,10 @@
 import type { Agent, ActivityEvent } from "../types";
 
+/**
+ * Empty agent templates — used ONLY as loading-state placeholders before
+ * the first real API response arrives.  All metrics start at zero so the
+ * UI never shows fake "18,420" or "213" style counts.
+ */
 export const AGENTS: Agent[] = [
   {
     id: "resume",
@@ -8,72 +13,53 @@ export const AGENTS: Agent[] = [
     description: "Extracts skills, experience and signals from your resume in seconds.",
     status: "idle",
     progress: 100,
-    tasksToday: 1,
-    tasksTotal: 12,
-    recentActions: [
-      { time: "9:02 AM", text: "Re-indexed resume after upload" },
-      { time: "8:47 AM", text: "Detected 4 new skills: tRPC, Astro, Bun, Drizzle" },
-    ],
+    tasksToday: 0,
+    tasksTotal: 0,
+    recentActions: [],
   },
   {
     id: "discovery",
     name: "Discovery Agent",
     role: "Searches the web for jobs",
     description: "Crawls 40+ sources continuously to surface roles before they're saturated.",
-    status: "active",
-    progress: 64,
-    tasksToday: 312,
-    tasksTotal: 18420,
-    recentActions: [
-      { time: "Just now", text: "Found 8 new roles on Wellfound" },
-      { time: "2 min", text: "Scanning Hacker News Who's Hiring" },
-      { time: "6 min", text: "Indexed 124 roles from LinkedIn" },
-    ],
+    status: "idle",
+    progress: 100,
+    tasksToday: 0,
+    tasksTotal: 0,
+    recentActions: [],
   },
   {
     id: "matching",
     name: "Matching Agent",
     role: "Scores fit for every role",
     description: "Compares each role against your resume and preferences using multi-factor scoring.",
-    status: "thinking",
-    progress: 41,
-    tasksToday: 287,
-    tasksTotal: 14102,
-    recentActions: [
-      { time: "Just now", text: "Scoring Staff PM @ Anthropic" },
-      { time: "1 min", text: "94% match: AI PM @ OpenAI" },
-      { time: "3 min", text: "Filtered out 22 mismatched roles" },
-    ],
+    status: "idle",
+    progress: 100,
+    tasksToday: 0,
+    tasksTotal: 0,
+    recentActions: [],
   },
   {
     id: "apply",
     name: "AutoApply Agent",
     role: "Autonomous job applications",
     description: "Navigates directly to job listings, fills forms with your profile data, uploads your resume, and submits applications autonomously — or escalates to you when human verification is needed.",
-    status: "active",
-    progress: 22,
-    tasksToday: 14,
-    tasksTotal: 213,
-    recentActions: [
-      { time: "Just now", text: "Applying to Python Developer @ Infosys" },
-      { time: "12 min", text: "✅ Applied to Backend Eng @ Wipro" },
-      { time: "1 hr", text: "⚠️ Workday ATS detected — marked for manual review" },
-    ],
+    status: "idle",
+    progress: 100,
+    tasksToday: 0,
+    tasksTotal: 0,
+    recentActions: [],
   },
   {
     id: "orchestrator",
     name: "Agent Orchestrator",
     role: "Multi-agent coordination engine",
     description: "Master coordinator that manages the pipeline between Discovery and AutoApply. Polls the database for high-match jobs and dispatches autonomous applications.",
-    status: "active",
+    status: "idle",
     progress: 100,
-    tasksToday: 47,
-    tasksTotal: 1280,
-    recentActions: [
-      { time: "Just now", text: "Dispatched 3 jobs to AutoApply queue" },
-      { time: "5 min", text: "Polling cycle complete — 0 new discovered" },
-      { time: "15 min", text: "Enqueued 5 high-match jobs (≥70%)" },
-    ],
+    tasksToday: 0,
+    tasksTotal: 0,
+    recentActions: [],
   },
   {
     id: "tracking",
@@ -82,12 +68,9 @@ export const AGENTS: Agent[] = [
     description: "Monitors inbox and platforms to keep your pipeline up to date.",
     status: "idle",
     progress: 100,
-    tasksToday: 6,
-    tasksTotal: 198,
-    recentActions: [
-      { time: "10 min", text: "Stripe moved you to recruiter screen" },
-      { time: "1 hr", text: "Linear scheduled an interview" },
-    ],
+    tasksToday: 0,
+    tasksTotal: 0,
+    recentActions: [],
   },
   {
     id: "interview",
@@ -97,23 +80,13 @@ export const AGENTS: Agent[] = [
     status: "paused",
     progress: 0,
     tasksToday: 0,
-    tasksTotal: 47,
-    recentActions: [
-      { time: "Yesterday", text: "Completed system design mock for Stripe" },
-      { time: "2 days ago", text: "Generated 24 behavioral questions for Linear" },
-    ],
+    tasksTotal: 0,
+    recentActions: [],
   },
 ];
 
-export const ACTIVITY: ActivityEvent[] = [
-  { id: "e1", agent: "Discovery", text: "Found 8 new roles on Wellfound", time: "Just now", kind: "discover" },
-  { id: "e2", agent: "Matching", text: "94% match: AI PM @ OpenAI", time: "1 min", kind: "match" },
-  { id: "e3", agent: "Auto Apply", text: "Drafting application for Linear", time: "2 min", kind: "apply" },
-  { id: "e4", agent: "Tracking", text: "Stripe moved you to recruiter screen", time: "10 min", kind: "interview" },
-  { id: "e5", agent: "Discovery", text: "Scanning Hacker News Who's Hiring", time: "12 min", kind: "discover" },
-  { id: "e6", agent: "Matching", text: "Filtered 22 mismatched roles", time: "14 min", kind: "info" },
-  { id: "e7", agent: "Auto Apply", text: "Submitted to Vercel", time: "20 min", kind: "apply" },
-  { id: "e8", agent: "Interview", text: "Generated 12 behavioral questions for Linear", time: "1 hr", kind: "interview" },
-  { id: "e9", agent: "Discovery", text: "Indexed 124 roles from LinkedIn", time: "1 hr", kind: "discover" },
-  { id: "e10", agent: "Resume", text: "Detected 4 new skills in your resume", time: "2 hr", kind: "info" },
-];
+/**
+ * Empty activity events — no fake feed items.
+ * Real events stream via WebSocket.
+ */
+export const ACTIVITY: ActivityEvent[] = [];

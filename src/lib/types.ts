@@ -26,6 +26,8 @@ export type Job = {
 
 export type ApplicationStage =
   | "saved"
+  | "matching"
+  | "applying"
   | "applied"
   | "assessment"
   | "interview"

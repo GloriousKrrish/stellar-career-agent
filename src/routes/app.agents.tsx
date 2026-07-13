@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { motion } from "framer-motion";
-import { Play, Pause, ArrowRight } from "lucide-react";
+import { Play, Pause, ArrowRight, RefreshCw } from "lucide-react";
 import { PageHeader } from "@/components/shell/sidebar";
 import { Stagger, StaggerItem, HoverLift } from "@/components/motion/primitives";
 import { AGENTS } from "@/lib/mock/agents";
@@ -13,7 +13,7 @@ export const Route = createFileRoute("/app/agents")({
   head: () => ({
     meta: [
       { title: "AI Agents — Aria" },
-      { name: "description", content: "Your six AI career agents, working in concert." },
+      { name: "description", content: "Your seven AI career agents, working in concert." },
     ],
   }),
   component: AgentsPage,
@@ -81,6 +81,9 @@ function AgentCard({ a }: { a: Agent }) {
 
         <div className="mt-5 pt-4 border-t border-border space-y-1.5 flex-1">
           <div className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground mb-2">Recent</div>
+          {a.recentActions.length === 0 && (
+            <div className="text-xs text-muted-foreground italic">No recent activity</div>
+          )}
           {a.recentActions.map((act, i) => (
             <div key={i} className="flex items-start gap-2 text-xs">
               <span className="text-muted-foreground tabular-nums w-12 flex-shrink-0">{act.time}</span>
@@ -123,22 +126,30 @@ function Workflow() {
 }
 
 function AgentsPage() {
+  // Initialize with empty-metrics placeholders (no fake data)
   const [agents, setAgents] = useState<Agent[]>(AGENTS);
+  const [loading, setLoading] = useState(true);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
   useEffect(() => {
     let active = true;
     const fetchStats = async () => {
       try {
         const data = await api.getAgentsDashboard();
-        if (active) {
+        if (active && data.agents) {
           setAgents(data.agents);
+          setLastRefresh(new Date());
         }
       } catch (err) {
         console.error("Failed to fetch agent dashboard stats:", err);
+        // On error, keep the zero-value placeholders — never show fake data
+      } finally {
+        if (active) setLoading(false);
       }
     };
     
     fetchStats();
+    // Poll every 3s for live updates
     const interval = setInterval(fetchStats, 3000);
     return () => {
       active = false;
@@ -146,9 +157,29 @@ function AgentsPage() {
     };
   }, []);
 
+  // Also listen for WebSocket application_completed events to force refetch
+  useEffect(() => {
+    const handler = () => {
+      api.getAgentsDashboard().then((data) => {
+        if (data.agents) setAgents(data.agents);
+      }).catch(() => {});
+    };
+    window.addEventListener("aria:application_completed", handler);
+    return () => window.removeEventListener("aria:application_completed", handler);
+  }, []);
+
   return (
     <>
       <PageHeader title="AI Agents" subtitle="Eight specialists collaborating on your career, 24/7." />
+
+      {/* Refresh indicator */}
+      <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground mb-2">
+        <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+        {lastRefresh
+          ? `Updated ${lastRefresh.toLocaleTimeString()}`
+          : "Loading live data..."}
+      </div>
+
       <Workflow />
       <Stagger className="mt-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {agents.map((a) => (

@@ -84,7 +84,7 @@ export function ActivityStream({ open }: { open: boolean }) {
         });
 
         // Dispatch a custom window event to trigger dashboard/Kanban board refetches
-        if (raw.event_type === "application_completed") {
+        if (raw.event_type === "application_completed" || raw.event_type === "application_updated") {
           window.dispatchEvent(new CustomEvent("aria:application_completed", { detail: raw.data }));
         }
 

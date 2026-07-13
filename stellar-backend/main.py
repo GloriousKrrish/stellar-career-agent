@@ -697,29 +697,26 @@ async def apply_to_job(run_id: str, job_id: str, background_tasks: BackgroundTas
 
 # ─── Agents Status ────────────────────────────────────────────────────────────
 
-@app.get("/api/agents/status", tags=["Agents"])
-async def get_agents_status():
-    """Get current status of all 7 AI agents."""
-    statuses = store.get_all_agent_statuses()
-    return {
-        "agents": [s.model_dump(mode="json") for s in statuses],
-        "total": len(statuses),
-        "active": sum(1 for s in statuses if s.status == "active"),
-    }
-
-
-@app.get("/api/agents/dashboard", tags=["Agents"])
-async def get_agents_dashboard(current_user: dict[str, Any] = Depends(get_current_user)):
-    """Get real-time agent statuses, counts, and recent logs for the dashboard."""
+def compile_agents_list(user_id: str | None) -> list[dict]:
     import db as database
     
-    # 1. Fetch counts from database
-    db_counts = database.db_get_dashboard_counts(current_user["id"])
+    # 1. Fetch counts
+    if user_id:
+        db_counts = database.db_get_dashboard_counts(user_id)
+        db_logs = database.db_get_agent_logs(user_id, limit=50)
+    else:
+        db_counts = {
+            "resume": {"today": 0, "lifetime": 0},
+            "discovery": {"today": 0, "lifetime": 0},
+            "matching": {"today": 0, "lifetime": 0},
+            "orchestrator": {"today": 0, "lifetime": 0},
+            "autoapply": {"today": 0, "lifetime": 0},
+            "tracking": {"today": 0, "lifetime": 0},
+            "interview": {"today": 0, "lifetime": 0}
+        }
+        db_logs = []
     
-    # 2. Fetch logs from database
-    db_logs = database.db_get_agent_logs(current_user["id"], limit=50)
-    
-    # 3. Compile agent statuses
+    # 2. Compile agent statuses
     statuses = {s.agent_id: s for s in store.get_all_agent_statuses()}
     
     # Map log dates to time-ago or human strings
@@ -755,125 +752,135 @@ async def get_agents_dashboard(current_user: dict[str, Any] = Depends(get_curren
                 "time": format_log_time(log_entry["created_at"]),
                 "text": log_entry["text"]
             })
-    
-    # Fallback mock logs if no logs are present yet (to make it look premium and beautiful)
-    default_logs = {
-        "resume": [
-            {"time": "9:02 AM", "text": "Re-indexed resume after upload"},
-            {"time": "8:47 AM", "text": "Detected 4 new skills: Python, React, Playwright, FastAPI"}
-        ],
-        "discovery": [
-            {"time": "Just now", "text": "Found 8 new roles on Wellfound"},
-            {"time": "2 min", "text": "Scanning Hacker News Who's Hiring"},
-            {"time": "6 min", "text": "Indexed 124 roles from LinkedIn"}
-        ],
-        "matching": [
-            {"time": "Just now", "text": "Scoring Staff PM @ Anthropic"},
-            {"time": "1 min", "text": "94% match: AI PM @ OpenAI"},
-            {"time": "3 min", "text": "Filtered out 22 mismatched roles"}
-        ],
-        "autoapply": [
-            {"time": "Just now", "text": "Standing by for new jobs..."},
-        ],
-        "orchestrator": [
-            {"time": "Just now", "text": "Orchestrator online, polling queue..."},
-        ],
-        "tracking": [
-            {"time": "10 min", "text": "Stripe moved you to recruiter screen"},
-            {"time": "1 hr", "text": "Linear scheduled an interview"}
-        ],
-        "interview": [
-            {"time": "Yesterday", "text": "Completed system design mock for Stripe"},
-            {"time": "2 days ago", "text": "Generated 24 behavioral questions for Linear"}
-        ]
-    }
-    
-    # Use default fallback logs if the database list for that agent is empty
-    for k in agent_logs:
-        if not agent_logs[k]:
-            agent_logs[k] = default_logs[k]
             
-    # Build dynamic agents structure
     agents_list = [
         {
             "id": "resume",
+            "agent_id": "resume",
             "name": "Resume Agent",
             "role": "Parses and enhances your resume",
             "description": "Extracts skills, experience and signals from your resume in seconds.",
             "status": "active" if (statuses.get("resume") and statuses["resume"].status == "active") else "idle",
             "progress": 100,
             "tasksToday": db_counts["resume"]["today"],
+            "tasks_today": db_counts["resume"]["today"],
             "tasksTotal": db_counts["resume"]["lifetime"],
-            "recentActions": agent_logs["resume"][:3]
+            "tasks_total": db_counts["resume"]["lifetime"],
+            "recentActions": agent_logs["resume"][:3],
+            "recent_actions": agent_logs["resume"][:3]
         },
         {
             "id": "discovery",
+            "agent_id": "discovery",
             "name": "Discovery Agent",
             "role": "Searches the web for jobs",
             "description": "Crawls 40+ sources continuously to surface roles before they're saturated.",
             "status": "active" if (statuses.get("discovery") and statuses["discovery"].status == "active") else "idle",
             "progress": 64 if (statuses.get("discovery") and statuses["discovery"].status == "active") else 100,
             "tasksToday": db_counts["discovery"]["today"],
+            "tasks_today": db_counts["discovery"]["today"],
             "tasksTotal": db_counts["discovery"]["lifetime"],
-            "recentActions": agent_logs["discovery"][:3]
+            "tasks_total": db_counts["discovery"]["lifetime"],
+            "recentActions": agent_logs["discovery"][:3],
+            "recent_actions": agent_logs["discovery"][:3]
         },
         {
             "id": "matching",
+            "agent_id": "matching",
             "name": "Matching Agent",
             "role": "Scores fit for every role",
             "description": "Compares each role against your resume and preferences using multi-factor scoring.",
-            "status": "thinking" if (statuses.get("matching") and statuses["matching"].status == "active") else "idle",
-            "progress": 41 if (statuses.get("matching") and statuses["matching"].status == "active") else 100,
+            "status": "thinking" if (statuses.get("matching") and statuses["matching"].status in ("active", "thinking")) else "idle",
+            "progress": 41 if (statuses.get("matching") and statuses["matching"].status in ("active", "thinking")) else 100,
             "tasksToday": db_counts["matching"]["today"],
+            "tasks_today": db_counts["matching"]["today"],
             "tasksTotal": db_counts["matching"]["lifetime"],
-            "recentActions": agent_logs["matching"][:3]
+            "tasks_total": db_counts["matching"]["lifetime"],
+            "recentActions": agent_logs["matching"][:3],
+            "recent_actions": agent_logs["matching"][:3]
         },
         {
             "id": "apply",
+            "agent_id": "apply",
             "name": "AutoApply Agent",
             "role": "Autonomous job applications",
             "description": "Navigates directly to job listings, fills forms with your profile data, uploads your resume, and submits applications autonomously — or escalates to you when human verification is needed.",
             "status": "active" if (statuses.get("autoapply") and statuses["autoapply"].status == "active") else "idle",
             "progress": 22 if (statuses.get("autoapply") and statuses["autoapply"].status == "active") else 100,
             "tasksToday": db_counts["autoapply"]["today"],
+            "tasks_today": db_counts["autoapply"]["today"],
             "tasksTotal": db_counts["autoapply"]["lifetime"],
-            "recentActions": agent_logs["autoapply"][:3]
+            "tasks_total": db_counts["autoapply"]["lifetime"],
+            "recentActions": agent_logs["autoapply"][:3],
+            "recent_actions": agent_logs["autoapply"][:3]
         },
         {
             "id": "orchestrator",
+            "agent_id": "orchestrator",
             "name": "Agent Orchestrator",
             "role": "Multi-agent coordination engine",
             "description": "Master coordinator that manages the pipeline between Discovery and AutoApply. Polls the database for high-match jobs and dispatches autonomous applications.",
             "status": "active" if (statuses.get("orchestrator") and statuses["orchestrator"].status == "active") else "idle",
             "progress": 100,
             "tasksToday": db_counts["orchestrator"]["today"],
+            "tasks_today": db_counts["orchestrator"]["today"],
             "tasksTotal": db_counts["orchestrator"]["lifetime"],
-            "recentActions": agent_logs["orchestrator"][:3]
+            "tasks_total": db_counts["orchestrator"]["lifetime"],
+            "recentActions": agent_logs["orchestrator"][:3],
+            "recent_actions": agent_logs["orchestrator"][:3]
         },
         {
             "id": "tracking",
+            "agent_id": "tracking",
             "name": "Tracking Agent",
             "role": "Follows up on every application",
             "description": "Monitors inbox and platforms to keep your pipeline up to date.",
             "status": "active" if (statuses.get("tracking") and statuses["tracking"].status == "active") else "idle",
             "progress": 100,
             "tasksToday": db_counts["tracking"]["today"],
+            "tasks_today": db_counts["tracking"]["today"],
             "tasksTotal": db_counts["tracking"]["lifetime"],
-            "recentActions": agent_logs["tracking"][:3]
+            "tasks_total": db_counts["tracking"]["lifetime"],
+            "recentActions": agent_logs["tracking"][:3],
+            "recent_actions": agent_logs["tracking"][:3]
         },
         {
             "id": "interview",
+            "agent_id": "interview",
             "name": "Interview Agent",
             "role": "Coaches you for every round",
             "description": "Generates likely questions, runs mock interviews and gives feedback.",
-            "status": "paused",
-            "progress": 0,
-            "tasksToday": 0,
-            "tasksTotal": 47,
-            "recentActions": agent_logs["interview"][:3]
+            "status": "active" if (statuses.get("interview") and statuses["interview"].status == "active") else "paused",
+            "progress": 0 if not (statuses.get("interview") and statuses["interview"].status == "active") else 50,
+            "tasksToday": db_counts["interview"]["today"],
+            "tasks_today": db_counts["interview"]["today"],
+            "tasksTotal": db_counts["interview"]["lifetime"],
+            "tasks_total": db_counts["interview"]["lifetime"],
+            "recentActions": agent_logs["interview"][:3],
+            "recent_actions": agent_logs["interview"][:3]
         }
     ]
+    return agents_list
+
+
+@app.get("/api/agents/status", tags=["Agents"])
+async def get_agents_status(current_user: dict[str, Any] | None = Depends(get_current_user_optional)):
+    """Get current status of all 7 AI agents."""
+    user_id = current_user["id"] if current_user else None
+    agents_list = compile_agents_list(user_id)
+    return {
+        "agents": agents_list,
+        "total": len(agents_list),
+        "active": sum(1 for s in agents_list if s["status"] in ("active", "thinking")),
+    }
+
+
+@app.get("/api/agents/dashboard", tags=["Agents"])
+async def get_agents_dashboard(current_user: dict[str, Any] = Depends(get_current_user)):
+    """Get real-time agent statuses, counts, and recent logs for the dashboard."""
+    agents_list = compile_agents_list(current_user["id"])
     return {"agents": agents_list}
+
 
 
 @app.get("/api/workflows", tags=["Workflow"])
@@ -1094,7 +1101,7 @@ async def manual_enqueue_job(
     current_user: dict[str, Any] = Depends(get_current_user),
 ):
     """Manually enqueue a specific job for auto-application."""
-    print(f"🚀 [AUTO-APPLY TRIGGER] Received manual apply request from user {current_user['id']} for job '{req.job_title}' at {req.job_company}")
+    print(f"[AUTO-APPLY TRIGGER] Received manual apply request from user {current_user['id']} for job '{req.job_title}' at {req.job_company}")
     
     from agents.orchestrator import db_enqueue_job, process_single_autoapply_job
     
@@ -1125,7 +1132,7 @@ async def manual_enqueue_job(
     
     # Trigger the agent worker task immediately in the background
     background_tasks.add_task(process_single_autoapply_job, new_entry)
-    print(f"🔗 [AUTO-APPLY LAUNCHED] Spawned process_single_autoapply_job for task {queue_id[:8]} in the background")
+    print(f"[AUTO-APPLY LAUNCHED] Spawned process_single_autoapply_job for task {queue_id[:8]} in the background")
     
     return {
         "status": "enqueued",

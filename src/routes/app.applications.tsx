@@ -27,7 +27,8 @@ export const Route = createFileRoute("/app/applications")({
 });
 
 const STAGES: { id: ApplicationStage; label: string }[] = [
-  { id: "saved", label: "Saved" },
+  { id: "matching", label: "Matching" },
+  { id: "applying", label: "Applying" },
   { id: "applied", label: "Applied" },
   { id: "assessment", label: "Assessment" },
   { id: "interview", label: "Interview" },
@@ -183,7 +184,7 @@ function ApplicationsPage() {
         <DndContext sensors={sensors} onDragStart={(e) => setActiveId(String(e.active.id))} onDragEnd={onEnd} onDragCancel={() => setActiveId(null)}>
           <div className="flex gap-4 overflow-x-auto pb-4 -mx-2 px-2 select-none">
             {STAGES.map((s) => (
-              <Column key={s.id} stage={s} items={apps.filter((a) => a.stage === s.id)} />
+              <Column key={s.id} stage={s} items={apps.filter((a) => s.id === "matching" ? (a.stage === "matching" || a.stage === "saved") : a.stage === s.id)} />
             ))}
           </div>
           <DragOverlay>

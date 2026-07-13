@@ -792,6 +792,121 @@ async def fetch_glassdoor(role: str, location: str = "", start_page: int = 1, ma
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Provider: Google Custom Search JSON API Fallback
+# ──────────────────────────────────────────────────────────────────────────────
+
+GOOGLE_CSE_API_KEY = os.getenv("GOOGLE_CSE_API_KEY", "")
+GOOGLE_CSE_CX = os.getenv("GOOGLE_CSE_CX", "")
+
+async def fetch_google_cse(
+    role: str,
+    location: str = "",
+    target_site: str = "naukri.com",
+    on_progress: Callable[[str], Any] | None = None,
+) -> list[dict]:
+    """
+    Google Custom Search JSON API fallback.
+    Queries Google with strict site: operators to discover real job listing URLs
+    when direct DOM scraping of job boards fails or triggers anti-bot walls.
+    """
+    jobs: list[dict] = []
+    if not GOOGLE_CSE_API_KEY or not GOOGLE_CSE_CX:
+        log.info("Google CSE keys not configured — skipping CSE fallback")
+        return jobs
+
+    # Build site-scoped query
+    query = f'"{role}" site:{target_site}'
+    if location:
+        query += f' "{location}"'
+
+    await _notify(on_progress, f"Google CSE Fallback: Searching '{target_site}' via Google Custom Search API...")
+    log.info(f"Google CSE query: {query}")
+
+    source_label = "NAUKRI" if "naukri" in target_site.lower() else "GLASSDOOR"
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                "https://www.googleapis.com/customsearch/v1",
+                params={
+                    "key": GOOGLE_CSE_API_KEY,
+                    "cx": GOOGLE_CSE_CX,
+                    "q": query,
+                    "num": 10,
+                },
+            )
+            log.info(f"Google CSE response: {resp.status_code}")
+            if resp.status_code != 200:
+                log.warning(f"Google CSE error: {resp.status_code} — {resp.text[:200]}")
+                await _notify(on_progress, f"Google CSE Fallback: Failed (HTTP {resp.status_code}).")
+                return jobs
+
+            data = resp.json()
+            items = data.get("items", [])
+            log.info(f"Google CSE returned {len(items)} results for site:{target_site}")
+            await _notify(on_progress, f"Google CSE Fallback: Found {len(items)} results on {target_site}.")
+
+            for item in items:
+                raw_url = item.get("link", "")
+                title = item.get("title", "")
+                snippet = item.get("snippet", "")
+
+                # Normalize and validate URL
+                if not raw_url or not raw_url.startswith("http"):
+                    continue
+
+                # Strip tracking parameters
+                clean_url = raw_url.split("?")[0].strip()
+
+                # For Naukri, validate it's an actual job listing URL
+                if "naukri" in target_site.lower():
+                    clean_url = clean_naukri_url(clean_url)
+                    if not clean_url:
+                        continue
+
+                # For Glassdoor, ensure it's a glassdoor.com domain
+                if "glassdoor" in target_site.lower():
+                    if "glassdoor.com" not in clean_url.lower() and "glassdoor.co.in" not in clean_url.lower():
+                        continue
+
+                # Extract company from title pattern "Job Title - Company" or snippet
+                company = "Unknown"
+                if " - " in title:
+                    parts = title.rsplit(" - ", 1)
+                    title = parts[0].strip()
+                    company = parts[1].strip().replace(" | Naukri.com", "").replace(" | Glassdoor", "").strip()
+                elif " at " in title.lower():
+                    parts = re.split(r'\s+at\s+', title, flags=re.IGNORECASE)
+                    if len(parts) == 2:
+                        title = parts[0].strip()
+                        company = parts[1].strip()
+
+                # Clean up title cruft
+                title = re.sub(r'\s*\|\s*(Naukri\.com|Glassdoor).*', '', title).strip()
+                title = re.sub(r'\s*-\s*$', '', title).strip()
+
+                if not title:
+                    continue
+
+                jobs.append(make_job(
+                    title=title,
+                    company=company,
+                    location=location or "India",
+                    salary="",
+                    url=clean_url,
+                    source=source_label,
+                    description=snippet[:300],
+                ))
+
+    except Exception as e:
+        log.error(f"Google CSE fetch failed: {e}")
+        await _notify(on_progress, f"Google CSE Fallback: Request failed — {str(e)[:100]}")
+
+    log.info(f"Google CSE fallback found {len(jobs)} jobs from {target_site}")
+    return jobs
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Demo dataset fallback
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -907,7 +1022,24 @@ async def search_jobs_resilient(
         except Exception as e:
             log.warning(f"Arbeitnow API failed: {e}")
 
-    # 6. Fallback to high-quality demo jobs if still empty
+    # 6. Google Custom Search JSON API Fallback — fires when direct scraping fails
+    if not all_jobs:
+        await _notify(on_progress, "Direct scraping blocked. Activating Google Custom Search API fallback...")
+        for target_domain in ["naukri.com", "glassdoor.co.in"]:
+            try:
+                cse_jobs = await fetch_google_cse(
+                    role=role,
+                    location=location,
+                    target_site=target_domain,
+                    on_progress=on_progress,
+                )
+                if cse_jobs:
+                    all_jobs.extend(cse_jobs)
+                    provider_used = f"Google CSE ({target_domain})"
+            except Exception as e:
+                log.warning(f"Google CSE fallback failed for {target_domain}: {e}")
+
+    # 7. Fallback to high-quality demo jobs if still empty
     if not all_jobs and not direct_search:
         await _notify(on_progress, "Live crawling returned 0 results. Activating high-quality demo fallback dataset...")
         all_jobs = get_demo_jobs(role, location)

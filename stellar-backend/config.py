@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     firecrawl_api_key: str = ""
 
+    # Google Custom Search Engine (fallback when DOM scraping is blocked)
+    google_cse_api_key: str = ""
+    google_cse_cx: str = ""
+
     # Supabase Config
     supabase_url: str = ""
     supabase_anon_key: str = ""
