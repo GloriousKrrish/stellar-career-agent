@@ -1,10 +1,12 @@
 "use client";
+import { useState, useEffect } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { motion } from "framer-motion";
 import { Play, Pause, ArrowRight } from "lucide-react";
 import { PageHeader } from "@/components/shell/sidebar";
 import { Stagger, StaggerItem, HoverLift } from "@/components/motion/primitives";
 import { AGENTS } from "@/lib/mock/agents";
+import { api } from "@/lib/api";
 import type { Agent } from "@/lib/types";
 
 export const Route = createFileRoute("/app/agents")({
@@ -121,12 +123,35 @@ function Workflow() {
 }
 
 function AgentsPage() {
+  const [agents, setAgents] = useState<Agent[]>(AGENTS);
+
+  useEffect(() => {
+    let active = true;
+    const fetchStats = async () => {
+      try {
+        const data = await api.getAgentsDashboard();
+        if (active) {
+          setAgents(data.agents);
+        }
+      } catch (err) {
+        console.error("Failed to fetch agent dashboard stats:", err);
+      }
+    };
+    
+    fetchStats();
+    const interval = setInterval(fetchStats, 3000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
   return (
     <>
       <PageHeader title="AI Agents" subtitle="Eight specialists collaborating on your career, 24/7." />
       <Workflow />
       <Stagger className="mt-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {AGENTS.map((a) => (
+        {agents.map((a) => (
           <StaggerItem key={a.id}><AgentCard a={a} /></StaggerItem>
         ))}
       </Stagger>

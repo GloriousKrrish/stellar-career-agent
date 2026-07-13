@@ -121,6 +121,16 @@ function ApplicationsPage() {
 
   useEffect(() => {
     loadApps();
+
+    const handleAppCompleted = (e: Event) => {
+      console.log("🔄 [Applications Board] Received application_completed event. Re-fetching board data...", (e as CustomEvent).detail);
+      loadApps();
+    };
+
+    window.addEventListener("aria:application_completed", handleAppCompleted);
+    return () => {
+      window.removeEventListener("aria:application_completed", handleAppCompleted);
+    };
   }, []);
 
   const onEnd = async (e: DragEndEvent) => {

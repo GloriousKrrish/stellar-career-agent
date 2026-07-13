@@ -164,7 +164,7 @@ def db_update_queue_status(
     conn = database.get_db_connection()
     cursor = database.get_db_cursor(conn)
 
-    applied_at = now if status == "applied" else ""
+    applied_at = now if status == "applied" else None
 
     if database.IS_POSTGRES:
         cursor.execute("""
@@ -272,18 +272,40 @@ async def _emit_autoapply_event(
     event_type: str,
     message: str,
     data: dict | None = None,
+    user_id: str | None = None,
 ) -> None:
-    """Broadcast an auto-apply event to the WebSocket live feed."""
+    """Broadcast an auto-apply event to the WebSocket live feed and save to agent_logs."""
     from models import LiveEvent
+    import db as database
+    
     event = LiveEvent(
         run_id=run_id,
         event_type=event_type,
-        agent="AutoApply",
+        agent="AutoApplyAgent",
         message=message,
         data=data or {},
     )
     await store.publish(run_id, event.model_dump(mode="json"))
-    log.info(f"[AutoApply] [{run_id[:8]}] {message}")
+    log.info(f"[AutoApplyAgent] [{run_id[:8]}] {message}")
+
+    # Persist log to agent_logs table
+    if user_id:
+        try:
+            database.db_save_agent_log(
+                user_id=user_id,
+                agent="autoapply",
+                text=message,
+                kind="success" if ("success" in message.lower() or "✅" in message) else "error" if ("fail" in message.lower() or "❌" in message) else "info"
+            )
+            # Also log for Agent Orchestrator to populate both cards with real activities
+            database.db_save_agent_log(
+                user_id=user_id,
+                agent="orchestrator",
+                text=message,
+                kind="success" if ("success" in message.lower() or "✅" in message) else "error" if ("fail" in message.lower() or "❌" in message) else "info"
+            )
+        except Exception as e:
+            log.error(f"Failed to save agent log: {e}")
 
 
 async def process_single_autoapply_job(entry: dict) -> None:
@@ -305,7 +327,7 @@ async def process_single_autoapply_job(entry: dict) -> None:
     user_data = database.get_user_by_id(user_id)
     if not user_data:
         db_update_queue_status(queue_id, "failed", failure_reason="User profile not found")
-        await _emit_autoapply_event(run_id, "log", f"⚠️ Skipped {entry['job_title']}: user profile missing")
+        await _emit_autoapply_event(run_id, "log", f"[AutoApplyAgent]: ⚠️ Skipped {entry['job_title']}: user profile missing", user_id=user_id)
         return
 
     user_profile = UserProfile(
@@ -335,8 +357,9 @@ async def process_single_autoapply_job(entry: dict) -> None:
     # Emit progress
     await _emit_autoapply_event(
         run_id, "progress",
-        f"🤖 AutoApply starting: {entry['job_title']} @ {entry['job_company']}",
-        {"job_id": entry["job_id"], "queue_id": queue_id}
+        f"[AutoApplyAgent]: 🤖 AutoApply starting: {entry['job_title']} @ {entry['job_company']}",
+        {"job_id": entry["job_id"], "queue_id": queue_id},
+        user_id=user_id
     )
 
     # Update agent status board
@@ -349,7 +372,10 @@ async def process_single_autoapply_job(entry: dict) -> None:
 
     # Execute the application
     async def on_progress(msg: str):
-        await _emit_autoapply_event(run_id, "log", f"[AutoApply] {msg}")
+        if msg.startswith("["):
+            await _emit_autoapply_event(run_id, "log", msg, user_id=user_id)
+        else:
+            await _emit_autoapply_event(run_id, "log", f"[AutoApplyAgent]: {msg}", user_id=user_id)
 
     result = await agent.apply_to_job(
         task_id=queue_id,
@@ -396,12 +422,21 @@ async def process_single_autoapply_job(entry: dict) -> None:
             log.error(f"Failed to save applied application: {e}")
 
     # Emit result event
-    event_type = "agent_update" if status == "applied" else "log"
+    event_type = "application_completed" if status == "applied" else "log"
     emoji = {"applied": "✅", "requires_manual_intervention": "⚠️", "failed": "❌", "simulated": "🔄"}.get(status, "ℹ️")
     await _emit_autoapply_event(
         run_id, event_type,
-        f"{emoji} {entry['job_title']} @ {entry['job_company']}: {status.replace('_', ' ').title()}",
-        {"status": status, "job_id": entry["job_id"], "reason": result.get("reason", "")}
+        f"[AutoApplyAgent]: {emoji} {entry['job_title']} @ {entry['job_company']}: {status.replace('_', ' ').title()}",
+        {
+            "status": status,
+            "job_id": entry["job_id"],
+            "queue_id": queue_id,
+            "job_title": entry["job_title"],
+            "job_company": entry["job_company"],
+            "stage": "applied" if status == "applied" else status,
+            "reason": result.get("reason", "")
+        },
+        user_id=user_id
     )
 
     # Reset agent status

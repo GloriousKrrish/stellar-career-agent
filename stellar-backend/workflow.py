@@ -40,6 +40,27 @@ async def _emit(run_id: str, event_type: str, agent: str, message: str, data: di
     )
     await store.publish(run_id, event.model_dump(mode="json"))
     log.info(f"[{run_id[:8]}] [{agent}] {message}")
+    
+    # Persist log in database
+    try:
+        import db as database
+        state = store.get_workflow(run_id)
+        if state and state.user_id:
+            agent_key = {
+                "CareerProfiler": "resume",
+                "MarketIntel": "resume",
+                "JobDiscovery": "discovery",
+                "MatchScoring": "matching",
+                "Interview": "interview",
+            }.get(agent, agent.lower())
+            database.db_save_agent_log(
+                user_id=state.user_id,
+                agent=agent_key,
+                text=message,
+                kind="success" if ("complete" in message.lower() or "success" in message.lower() or "✅" in message) else "error" if ("fail" in message.lower() or "❌" in message) else "info"
+            )
+    except Exception as e:
+        log.error(f"Failed to save agent log in workflow: {e}")
 
 
 async def run_full_workflow(

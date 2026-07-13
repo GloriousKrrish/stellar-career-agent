@@ -151,6 +151,10 @@ export const api = {
   async getAgentStatus() {
     return request<{ agents: any[]; total: number; active: number }>("/api/agents/status");
   },
+  
+  async getAgentsDashboard() {
+    return request<{ agents: any[] }>("/api/agents/dashboard");
+  },
 
   // Applications
   async getApplications() {

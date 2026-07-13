@@ -64,10 +64,8 @@ export function ApplyDialog({
       };
       console.log("Sending apply payload:", payload);
       
-      // Save active run ID to localStorage (if it's not a dummy manual_enqueue token) and fire custom event to wake up WebSocket stream
-      if (activeRunId !== "manual_enqueue") {
-        localStorage.setItem("aria.active_run_id", activeRunId);
-      }
+      // Save active run ID to localStorage and fire custom event to wake up WebSocket stream
+      localStorage.setItem("aria.active_run_id", activeRunId);
       window.dispatchEvent(new CustomEvent("aria:run_started", { detail: activeRunId }));
       
       await api.enqueueForAutoApply(payload);

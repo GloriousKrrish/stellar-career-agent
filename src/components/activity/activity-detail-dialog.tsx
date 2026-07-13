@@ -111,12 +111,28 @@ export function ActivityDetailDialog({ event, onClose }: { event: ActivityEvent 
 
               <div>
                 <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground mb-3">Outcome</div>
-                <div className="rounded-xl border border-border p-3 flex items-start gap-2.5">
-                  <CheckCircle2 className="h-4 w-4 text-accent flex-shrink-0 mt-0.5" />
-                  <p className="text-sm">
-                    Task completed cleanly. Signals were forwarded to downstream agents and the activity feed.
-                  </p>
-                </div>
+                {event.text.toLowerCase().includes("failed") || event.text.toLowerCase().includes("error") ? (
+                  <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-3 flex items-start gap-2.5">
+                    <X className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-sm text-red-500/90">
+                      Task failed. See the log above for details and errors encountered during execution.
+                    </p>
+                  </div>
+                ) : event.text.toLowerCase().includes("requires manual") || event.text.toLowerCase().includes("manual review") || event.text.toLowerCase().includes("awaiting") || event.text.toLowerCase().includes("pending") ? (
+                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 flex items-start gap-2.5">
+                    <Clock className="h-4 w-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-sm text-amber-500/90">
+                      Awaiting action. This task is currently paused awaiting user verification or manual intervention.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-border p-3 flex items-start gap-2.5">
+                    <CheckCircle2 className="h-4 w-4 text-accent flex-shrink-0 mt-0.5" />
+                    <p className="text-sm">
+                      Task completed cleanly. Signals were forwarded to downstream agents and the activity feed.
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div className="rounded-2xl bg-foreground text-background p-4">

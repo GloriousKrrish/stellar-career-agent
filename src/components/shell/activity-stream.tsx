@@ -83,6 +83,11 @@ export function ActivityStream({ open }: { open: boolean }) {
           return [mapped, ...prev].slice(0, 20);
         });
 
+        // Dispatch a custom window event to trigger dashboard/Kanban board refetches
+        if (raw.event_type === "application_completed") {
+          window.dispatchEvent(new CustomEvent("aria:application_completed", { detail: raw.data }));
+        }
+
         if (raw.event_type === "completed" || raw.event_type === "error") {
           localStorage.removeItem("aria.active_run_id");
           setTimeout(() => setActiveRunId(null), 5000);

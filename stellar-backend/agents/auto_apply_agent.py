@@ -29,6 +29,9 @@ from models import UserProfile, ScoredJob
 
 log = get_logger("AutoApplyAgent")
 
+# ── Operational Mode Configuration ───────────────────────────────────────────
+FULLY_AUTONOMOUS = True
+
 # ── Known ATS platforms that require manual intervention ──────────────────────
 EXTERNAL_ATS_DOMAINS = [
     "myworkdayjobs.com", "workday.com",
@@ -288,7 +291,8 @@ class AutoApplyAgent:
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(
-                headless=True,
+                headless=False,
+                slow_mo=1000,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
@@ -332,7 +336,7 @@ class AutoApplyAgent:
 
             try:
                 if on_progress:
-                    await on_progress(f"Navigating to {job_company} application page...")
+                    await on_progress("[AutoApplyAgent]: Navigating directly to target job detail view...")
 
                 # ── Step 1: Navigate to job URL ───────────────────────────────
                 response = await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
@@ -345,7 +349,7 @@ class AutoApplyAgent:
                     screenshot = await self._take_screenshot(page, task_id)
                     log.info(f"[{task_id[:8]}] Redirected to ATS: {ats_platform}")
                     if on_progress:
-                        await on_progress(f"Redirected to {ats_platform} — requires manual application")
+                        await on_progress(f"[AutoApplyAgent]: Redirected to external ATS {ats_platform} — requires manual application")
                     return {
                         "status": "requires_manual_intervention",
                         "reason": f"Job redirected to external ATS: {ats_platform}",
@@ -361,7 +365,7 @@ class AutoApplyAgent:
                     screenshot = await self._take_screenshot(page, task_id)
                     log.warning(f"[{task_id[:8]}] Blocked by: {blocker}")
                     if on_progress:
-                        await on_progress(f"Blocked by {blocker} — escalating to human review")
+                        await on_progress(f"[AutoApplyAgent]: Blocked by {blocker} — escalating to human review")
                     return {
                         "status": "requires_manual_intervention",
                         "reason": f"Anti-bot protection detected: {blocker}",
@@ -369,15 +373,15 @@ class AutoApplyAgent:
                     }
 
                 if on_progress:
-                    await on_progress(f"Page loaded. Scanning for application form elements...")
+                    await on_progress("[AutoApplyAgent]: Scanning for application form elements...")
 
                 # ── Step 3: Find and click Apply button ───────────────────────
-                apply_clicked = await self._find_and_click_apply(page, task_id)
+                apply_clicked = await self._find_and_click_apply(page, task_id, on_progress)
                 if not apply_clicked:
                     screenshot = await self._take_screenshot(page, task_id)
                     log.info(f"[{task_id[:8]}] No Apply button found")
                     if on_progress:
-                        await on_progress("No standard Apply button detected — marking for manual review")
+                        await on_progress("[AutoApplyAgent]: No standard Apply button detected — marking for manual review")
                     return {
                         "status": "requires_manual_intervention",
                         "reason": "Could not locate an Apply button on the job page",
@@ -392,7 +396,7 @@ class AutoApplyAgent:
                 if ats_platform:
                     screenshot = await self._take_screenshot(page, task_id)
                     if on_progress:
-                        await on_progress(f"Apply button redirected to {ats_platform}")
+                        await on_progress(f"[AutoApplyAgent]: Apply button redirected to external ATS {ats_platform}")
                     return {
                         "status": "requires_manual_intervention",
                         "reason": f"Apply redirected to external ATS: {ats_platform}",
@@ -402,20 +406,20 @@ class AutoApplyAgent:
                     }
 
                 if on_progress:
-                    await on_progress("Apply form detected. Filling candidate information...")
+                    await on_progress("[AutoApplyAgent]: Form detected. Typing name and uploading resume binary...")
 
                 # ── Step 4: Fill form fields ──────────────────────────────────
                 field_map = self._build_field_map(user)
                 fields_filled = await self._fill_form_fields(page, field_map, task_id)
 
                 if on_progress:
-                    await on_progress(f"Filled {fields_filled} form fields from profile data")
+                    await on_progress(f"[AutoApplyAgent]: Filled {fields_filled} form fields from profile data")
 
                 # ── Step 5: Upload resume if file input exists ────────────────
                 if resume_path and os.path.isfile(resume_path):
                     uploaded = await self._upload_resume(page, resume_path, task_id)
                     if uploaded and on_progress:
-                        await on_progress("Resume file uploaded successfully")
+                        await on_progress("[AutoApplyAgent]: Resume file uploaded successfully")
 
                 await _human_delay(1500, 3000)
 
@@ -423,17 +427,61 @@ class AutoApplyAgent:
                 screenshot = await self._take_screenshot(page, task_id)
 
                 if on_progress:
-                    await on_progress(f"Application form populated for {job_title} @ {job_company}")
+                    await on_progress(f"[AutoApplyAgent]: Application form populated for {job_title} @ {job_company}")
 
                 # ── Step 7: Attempt submit ────────────────────────────────────
-                submitted = await self._submit_form(page, task_id)
+                submitted = False
+                try:
+                    if FULLY_AUTONOMOUS:
+                        # Path A: Fully Autonomous Submission
+                        if on_progress:
+                            await on_progress("[AutoApplyAgent]: Triggering fully autonomous submission...")
+                        
+                        submitted = await self._submit_form(page, task_id, on_progress)
+                        if submitted:
+                            try:
+                                await page.wait_for_load_state("networkidle", timeout=5000)
+                            except Exception:
+                                pass
+                            if on_progress:
+                                await on_progress("[AutoApplyAgent]: ✅ Application successfully submitted automatically!")
+                    else:
+                        # Path B: Safe Manual Review Pause
+                        if on_progress:
+                            await on_progress("[AutoApplyAgent]: ⏸️ Paused: Review the page in the browser window and click Submit manually.")
+                        
+                        # Update queue status in database to PENDING_SUBMIT to reflect manual review state
+                        try:
+                            from agents.orchestrator import db_update_queue_status
+                            db_update_queue_status(task_id, "PENDING_SUBMIT")
+                        except Exception as db_err:
+                            log.warning(f"[{task_id[:8]}] Failed to update status to PENDING_SUBMIT: {db_err}")
+
+                        # Keep the browser context alive without throwing an exception or hitting a global execution timeout
+                        try:
+                            for _ in range(120):
+                                if page.is_closed():
+                                    submitted = True
+                                    break
+                                try:
+                                    if page.url != job_url and not any(term in page.url.lower() for term in ["apply", "job"]):
+                                        submitted = True
+                                        break
+                                except Exception:
+                                    pass
+                                await asyncio.sleep(1)
+                        except Exception as pause_err:
+                            log.warning(f"[{task_id[:8]}] Manual review pause interrupted: {pause_err}")
+                except Exception as run_err:
+                    log.error(f"[{task_id[:8]}] Exception in final submission step: {run_err}")
+                    submitted = False
                 
                 if submitted:
                     await _human_delay(2000, 4000)
                     final_screenshot = await self._take_screenshot(page, task_id)
                     log.info(f"[{task_id[:8]}] Application submitted successfully")
                     if on_progress:
-                        await on_progress(f"✅ Application submitted for {job_title} @ {job_company}")
+                        await on_progress(f"[AutoApplyAgent]: ✅ Application submitted for {job_title} @ {job_company}")
                     return {
                         "status": "applied",
                         "reason": f"Successfully submitted application for {job_title} at {job_company}",
@@ -443,7 +491,7 @@ class AutoApplyAgent:
                 else:
                     log.info(f"[{task_id[:8]}] Form filled but submit button not found — manual review")
                     if on_progress:
-                        await on_progress("Form filled but could not confirm submission — needs manual verification")
+                        await on_progress("[AutoApplyAgent]: Form filled but could not confirm submission — needs manual verification")
                     return {
                         "status": "requires_manual_intervention",
                         "reason": "Form populated but submit confirmation could not be verified",
@@ -465,7 +513,7 @@ class AutoApplyAgent:
 
     # ── DOM Interaction Helpers ────────────────────────────────────────────────
 
-    async def _find_and_click_apply(self, page: Any, task_id: str) -> bool:
+    async def _find_and_click_apply(self, page: Any, task_id: str, on_progress: Optional[Callable] = None) -> bool:
         """Locate and click the primary Apply / Apply Now button."""
         apply_selectors = [
             # Naukri-specific selectors
@@ -490,6 +538,8 @@ class AutoApplyAgent:
             try:
                 el = page.locator(selector).first
                 if await el.is_visible(timeout=2000):
+                    if on_progress:
+                        await on_progress("[AutoApplyAgent]: Found 'Apply' trigger button, executing click...")
                     await _human_delay(500, 1500)
                     await el.click()
                     log.info(f"[{task_id[:8]}] Clicked apply: {selector}")
@@ -595,7 +645,7 @@ class AutoApplyAgent:
                 continue
         return False
 
-    async def _submit_form(self, page: Any, task_id: str) -> bool:
+    async def _submit_form(self, page: Any, task_id: str, on_progress: Optional[Callable] = None) -> bool:
         """Find and click the final submit button."""
         submit_selectors = [
             'button[type="submit"]',
@@ -611,6 +661,8 @@ class AutoApplyAgent:
             try:
                 el = page.locator(selector).first
                 if await el.is_visible(timeout=2000):
+                    if on_progress:
+                        await on_progress("[AutoApplyAgent]: Form fields verified. Triggering final application submission click...")
                     await _human_delay(1000, 2500)
                     await el.click()
                     log.info(f"[{task_id[:8]}] Clicked submit: {selector}")
