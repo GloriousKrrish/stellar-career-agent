@@ -22,10 +22,30 @@ Version: 2.0.0
 from __future__ import annotations
 import asyncio
 import os
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Optional
+
+# ── CRITICAL WINDOWS FIX ──────────────────────────────────────────────────────
+# On Windows, the default asyncio event loop is SelectorEventLoop which does
+# NOT support subprocess creation. Playwright internally spawns a Chromium
+# process using asyncio subprocesses, which raises NotImplementedError on
+# SelectorEventLoop. We force ProactorEventLoop before uvicorn starts the loop.
+if sys.platform == "win32":
+    import warnings
+    # Suppress deprecation warnings from Python 3.14 about ProactorEventLoopPolicy
+    # The fix is still required for Python < 3.14; on 3.14+ ProactorEventLoop is default.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        except AttributeError:
+            pass  # Python 3.14+: ProactorEventLoop is already the default
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 
 from fastapi import (
     FastAPI, File, Form, HTTPException, UploadFile,

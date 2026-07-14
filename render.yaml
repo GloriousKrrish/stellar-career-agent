@@ -1,29 +1,53 @@
 # Render.com deployment config for Stellar Backend (Python/FastAPI)
-# This file tells Render how to build and start the backend (FastAPI).
+# ─────────────────────────────────────────────────────────────────
+# IMPORTANT: Playwright requires Chromium to be installed at build time.
+# Render's Linux environment supports headless Chromium natively.
+# The Windows ProactorEventLoop fix in main.py is skipped on Linux (sys.platform != "win32").
 
 services:
   - type: web
     name: stellar-backend
     env: python
-    region: singapore  # closest to India
+    region: singapore   # closest region to India for low latency
     plan: free
     rootDir: stellar-backend
-    buildCommand: pip install -r requirements.txt
+
+    # Install Python deps + Playwright Chromium browser binary
+    buildCommand: |
+      pip install -r requirements.txt &&
+      playwright install chromium &&
+      playwright install-deps chromium
+
+    # Start with $PORT injected by Render
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+
+    # Health check so Render knows the service is alive
+    healthCheckPath: /health
+
     envVars:
       - key: GEMINI_API_KEY
-        sync: false
+        sync: false          # Set manually in Render dashboard
       - key: FIRECRAWL_API_KEY
         sync: false
       - key: SECRET_KEY
-        sync: false
+        sync: false          # Generate a strong random string
       - key: APP_ENV
         value: production
       - key: FRONTEND_URL
         value: https://stellar-career-agent-main.vercel.app
+      - key: AUTOAPPLY_HEADLESS
+        value: "true"        # Must be headless on Render (no display)
+      - key: AUTOAPPLY_SLOW_MO
+        value: "500"         # Faster on server
+      - key: LOG_LEVEL
+        value: INFO
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: GOOGLE_CSE_API_KEY
+        sync: false
+      - key: GOOGLE_CSE_CX
         sync: false
