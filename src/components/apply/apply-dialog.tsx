@@ -1,6 +1,6 @@
 "use client";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Sparkles, Loader2, CheckCircle2, FileText, Mail, User2 } from "lucide-react";
+import { X, Sparkles, Loader2, CheckCircle2, AlertTriangle, FileText, Mail, User2 } from "lucide-react";
 import { useEffect, useState, useRef } from "react";
 import { useRouter } from "@tanstack/react-router";
 import type { Job } from "@/lib/types";
@@ -8,6 +8,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { api, API_BASE_URL } from "@/lib/api";
 
 type Phase = "drafting" | "ready" | "submitting" | "done";
+type OutcomeStatus = "applied" | "simulated" | "requires_manual_intervention" | "failed" | null;
 
 export function ApplyDialog({
   job,
@@ -24,6 +25,8 @@ export function ApplyDialog({
   const [errorMsg, setErrorMsg] = useState("");
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [consoleLogs, setConsoleLogs] = useState<string[]>([]);
+  const [outcomeStatus, setOutcomeStatus] = useState<OutcomeStatus>(null);
+  const [outcomeReason, setOutcomeReason] = useState("");
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   const user = getCurrentUser() || {
@@ -41,6 +44,8 @@ export function ApplyDialog({
     setErrorMsg("");
     setActiveRunId(null);
     setConsoleLogs([]);
+    setOutcomeStatus(null);
+    setOutcomeReason("");
     const t = setTimeout(() => setPhase("ready"), 1400);
     return () => clearTimeout(t);
   }, [job]);
@@ -59,6 +64,25 @@ export function ApplyDialog({
       : (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host;
 
     const socket = new WebSocket(`${wsBase}/ws/${activeRunId}`);
+    let settled = false;
+
+    const settle = (
+      finalStatus: OutcomeStatus,
+      reason?: string,
+    ) => {
+      if (settled) return;
+      settled = true;
+      setOutcomeStatus(finalStatus);
+      setOutcomeReason(reason || "");
+
+      if (finalStatus === "failed") {
+        setErrorMsg(reason || "Browser automation failed.");
+        setPhase("ready");
+      } else {
+        // applied, simulated, requires_manual_intervention → show done screen
+        setPhase("done");
+      }
+    };
 
     socket.onopen = () => {
       setConsoleLogs((prev) => [...prev, "Connected to WebSocket. Launching browser..."]);
@@ -70,11 +94,20 @@ export function ApplyDialog({
         if (raw.message) {
           setConsoleLogs((prev) => [...prev, raw.message]);
         }
-        if (raw.event_type === "completed") {
-          setPhase("done");
+
+        // Primary terminal event from the orchestrator
+        if (raw.event_type === "application_completed" || raw.event_type === "completed") {
+          const status: OutcomeStatus = raw.data?.status || null;
+          const reason = raw.data?.reason || "";
+          settle(status, reason);
         } else if (raw.event_type === "error") {
-          setErrorMsg(raw.message || "Browser automation failed");
-          setPhase("ready");
+          settle("failed", raw.message || "Browser automation failed");
+        } else if (raw.event_type === "log" && raw.message) {
+          // Only settle on explicit fatal crash messages in logs
+          const msg = raw.message.toLowerCase();
+          if (msg.includes("crashed —") || msg.includes("crashed—")) {
+            settle("failed", raw.message);
+          }
         }
       } catch (err) {
         console.error(err);
@@ -83,6 +116,13 @@ export function ApplyDialog({
 
     socket.onerror = () => {
       setConsoleLogs((prev) => [...prev, "Connection error on log stream."]);
+    };
+
+    socket.onclose = () => {
+      // If socket closes without a result but we received substantial logs, treat as done
+      if (!settled && consoleLogs.length > 5) {
+        settle("simulated", "Automation finished (connection closed before final event).");
+      }
     };
 
     return () => {
@@ -100,10 +140,19 @@ export function ApplyDialog({
 
   const handleSubmit = async () => {
     if (!job) return;
+
+    // Guard: job must have a real URL to automate
+    if (!job.url || job.url.startsWith("https://jobs.example")) {
+      setErrorMsg("This job doesn't have a direct application URL. Please use the 'Direct Link' button to apply manually.");
+      return;
+    }
+
     const directRunId = `direct_${Math.random().toString(36).substring(2, 11)}`;
     setActiveRunId(directRunId);
     setPhase("submitting");
     setErrorMsg("");
+    setOutcomeStatus(null);
+    setOutcomeReason("");
     setConsoleLogs(["Initializing direct automation execution..."]);
     
     try {
@@ -112,7 +161,7 @@ export function ApplyDialog({
         job_id: job.id,
         job_title: job.title,
         job_company: job.company,
-        job_url: job.url || "",
+        job_url: job.url,
         job_source: job.source || "Web",
       };
       console.log("Sending apply payload:", payload);
@@ -126,6 +175,34 @@ export function ApplyDialog({
       setPhase("ready");
     }
   };
+
+  // "Done" screen content based on actual outcome
+  const doneContent = () => {
+    if (outcomeStatus === "requires_manual_intervention") {
+      return {
+        icon: <AlertTriangle className="h-6 w-6" />,
+        iconBg: "bg-yellow-500/15 text-yellow-500",
+        title: "Manual Review Required",
+        body: outcomeReason || "The job redirected to an external ATS (e.g. Workday, Greenhouse) that requires a human to complete. Open the Direct Link to finish your application.",
+      };
+    }
+    if (outcomeStatus === "simulated") {
+      return {
+        icon: <CheckCircle2 className="h-6 w-6" />,
+        iconBg: "bg-blue-500/15 text-blue-500",
+        title: "Automation Finished",
+        body: "The browser automation ran but couldn't confirm a successful submission. Check your application history or open the job directly.",
+      };
+    }
+    return {
+      icon: <CheckCircle2 className="h-6 w-6" />,
+      iconBg: "bg-accent/15 text-accent",
+      title: "Application Submitted!",
+      body: "Your application was submitted successfully. Aria will track this in your Applications board.",
+    };
+  };
+
+  const done = doneContent();
 
   return (
     <AnimatePresence>
@@ -188,6 +265,12 @@ export function ApplyDialog({
                     </div>
                   )}
 
+                  {!job.url || job.url.startsWith("https://jobs.example") ? (
+                    <div className="rounded-2xl bg-yellow-500/10 border border-yellow-500/20 p-4 text-sm text-yellow-600">
+                      ⚠️ No direct application URL available for this job. Auto-Apply requires a real job URL. Use the <strong>Direct Link</strong> button on the job card to apply manually.
+                    </div>
+                  ) : null}
+
                   <Section icon={<User2 className="h-3.5 w-3.5" />} title="Your profile">
                     <Row label="Name" value={user.name} />
                     <Row label="Email" value={user.email} />
@@ -239,13 +322,31 @@ export function ApplyDialog({
 
               {phase === "done" && (
                 <div className="py-10 text-center">
-                  <div className="mx-auto h-12 w-12 rounded-2xl bg-accent/15 text-accent flex items-center justify-center">
-                    <CheckCircle2 className="h-6 w-6" />
+                  <div className={`mx-auto h-12 w-12 rounded-2xl flex items-center justify-center ${done.iconBg}`}>
+                    {done.icon}
                   </div>
-                  <h4 className="mt-4 font-display text-xl">Direct Application Finished</h4>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    The browser automation finished executing the direct hit path. You can check the browser window or the application history.
+                  <h4 className="mt-4 font-display text-xl">{done.title}</h4>
+                  <p className="mt-1 text-sm text-muted-foreground max-w-sm mx-auto">
+                    {done.body}
                   </p>
+                  {outcomeStatus === "requires_manual_intervention" && job.url && (
+                    <a
+                      href={job.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-accent text-accent-foreground px-5 py-2 text-sm font-medium hover:opacity-90"
+                    >
+                      Open Job Listing →
+                    </a>
+                  )}
+                  {/* Show last few console logs in done state */}
+                  {consoleLogs.length > 0 && (
+                    <div className="mt-4 bg-black/80 text-green-400 font-mono text-xs rounded-xl p-3 max-h-32 overflow-y-auto text-left border border-border">
+                      {consoleLogs.slice(-5).map((logLine, idx) => (
+                        <div key={idx} className="whitespace-pre-wrap truncate">{logLine}</div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -257,9 +358,10 @@ export function ApplyDialog({
               {phase === "ready" && (
                 <button
                   onClick={handleSubmit}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium hover:opacity-90"
+                  disabled={!job.url || job.url.startsWith("https://jobs.example")}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  Confirm & submit
+                  Confirm &amp; submit
                 </button>
               )}
               {phase === "done" && (

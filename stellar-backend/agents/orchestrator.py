@@ -94,8 +94,15 @@ def db_enqueue_job(
     job_company: str,
     job_url: str,
     job_source: str = "",
+    initial_status: str = "discovered",
 ) -> str:
-    """Insert a discovered job into the auto-apply queue."""
+    """Insert a discovered job into the auto-apply queue.
+    
+    Args:
+        initial_status: 'discovered' (for orchestrator loop pickup) or
+                        'queued' (for manually-dispatched jobs, to prevent
+                        double-execution by the background orchestrator loop).
+    """
     queue_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
 
@@ -110,7 +117,7 @@ def db_enqueue_job(
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (id) DO NOTHING
         """, (queue_id, user_id, run_id, job_id, job_title, job_company, job_url,
-              job_source, "discovered", now, now))
+              job_source, initial_status, now, now))
     else:
         cursor.execute("""
         INSERT OR IGNORE INTO auto_apply_queue (
@@ -118,7 +125,7 @@ def db_enqueue_job(
             status, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (queue_id, user_id, run_id, job_id, job_title, job_company, job_url,
-              job_source, "discovered", now, now))
+              job_source, initial_status, now, now))
 
     conn.commit()
     conn.close()
@@ -143,7 +150,7 @@ def db_enqueue_job(
     except Exception as app_err:
         log.error(f"Failed to create/update matching application on enqueue: {app_err}")
 
-    log.info(f"Enqueued job for auto-apply: {job_title} @ {job_company} (queue_id={queue_id[:8]})")
+    log.info(f"Enqueued job for auto-apply: {job_title} @ {job_company} (queue_id={queue_id[:8]}, status={initial_status})")
     return queue_id
 
 
@@ -510,10 +517,12 @@ async def process_single_autoapply_job(entry: dict) -> None:
                 log.error(f"Failed to save applied application: {e}")
 
         # ── Emit result event with DETAILED reason in message ─────────────────
-        event_type = "application_completed" if status == "applied" else "log"
+        # Always use "application_completed" as the terminal event type so the
+        # frontend WebSocket handler can reliably detect all outcomes.
+        event_type = "application_completed"
         emoji = {"applied": "✅", "requires_manual_intervention": "⚠️", "failed": "❌", "simulated": "🔄"}.get(status, "ℹ️")
         status_label = status.replace('_', ' ').title()
-        reason_suffix = f" — {reason[:200]}" if reason and status == "failed" else ""
+        reason_suffix = f" — {reason[:200]}" if reason and status in ("failed", "requires_manual_intervention") else ""
         await _emit_autoapply_event(
             run_id, event_type,
             f"[AutoApplyAgent]: {emoji} {entry['job_title']} @ {entry['job_company']}: {status_label}{reason_suffix}",

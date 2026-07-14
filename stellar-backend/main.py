@@ -1193,6 +1193,9 @@ async def manual_enqueue_job(
         job_company=req.job_company,
         job_url=req.job_url,
         job_source=req.job_source,
+        # Use "queued" so the background orchestrator loop (which only polls for
+        # "discovered" entries) does NOT double-execute this manually triggered job.
+        initial_status="queued",
     )
 
     # Build the queue entry dict that process_single_autoapply_job expects

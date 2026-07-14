@@ -143,7 +143,8 @@ class LiveEvent(BaseModel):
     run_id: str
     event_type: Literal["progress", "agent_update", "job_found", "match_scored",
                         "action_required", "completed", "error", "log",
-                        "autoapply_queued", "autoapply_applied", "autoapply_failed"]
+                        "autoapply_queued", "autoapply_applied", "autoapply_failed",
+                        "application_completed", "application_updated"]
     agent: str = ""
     message: str = ""
     data: dict[str, Any] = {}
