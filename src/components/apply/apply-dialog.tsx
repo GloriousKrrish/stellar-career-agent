@@ -1,11 +1,11 @@
 "use client";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Sparkles, Loader2, CheckCircle2, FileText, Mail, User2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useRouter } from "@tanstack/react-router";
 import type { Job } from "@/lib/types";
 import { getCurrentUser } from "@/lib/auth";
-import { api } from "@/lib/api";
+import { api, API_BASE_URL } from "@/lib/api";
 
 type Phase = "drafting" | "ready" | "submitting" | "done";
 
@@ -22,6 +22,9 @@ export function ApplyDialog({
   const [phase, setPhase] = useState<Phase>("drafting");
   const [note, setNote] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [consoleLogs, setConsoleLogs] = useState<string[]>([]);
+  const logContainerRef = useRef<HTMLDivElement>(null);
 
   const user = getCurrentUser() || {
     name: "Job Seeker",
@@ -36,9 +39,56 @@ export function ApplyDialog({
     setPhase("drafting");
     setNote("");
     setErrorMsg("");
+    setActiveRunId(null);
+    setConsoleLogs([]);
     const t = setTimeout(() => setPhase("ready"), 1400);
     return () => clearTimeout(t);
   }, [job]);
+
+  useEffect(() => {
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [consoleLogs]);
+
+  useEffect(() => {
+    if (phase !== "submitting" || !activeRunId) return;
+
+    const wsBase = API_BASE_URL
+      ? API_BASE_URL.replace(/^http/, "ws")
+      : (window.location.protocol === "https:" ? "wss://" : "ws://") + window.location.host;
+
+    const socket = new WebSocket(`${wsBase}/ws/${activeRunId}`);
+
+    socket.onopen = () => {
+      setConsoleLogs((prev) => [...prev, "Connected to WebSocket. Launching browser..."]);
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const raw = JSON.parse(event.data);
+        if (raw.message) {
+          setConsoleLogs((prev) => [...prev, raw.message]);
+        }
+        if (raw.event_type === "completed") {
+          setPhase("done");
+        } else if (raw.event_type === "error") {
+          setErrorMsg(raw.message || "Browser automation failed");
+          setPhase("ready");
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    socket.onerror = () => {
+      setConsoleLogs((prev) => [...prev, "Connection error on log stream."]);
+    };
+
+    return () => {
+      socket.close();
+    };
+  }, [phase, activeRunId]);
 
   const summary = job
     ? `Aria drafted a tailored application for ${job.title} at ${job.company}. We aligned your ${(user.skills || []).slice(0, 3).join(", ") || "software development"} experience with their ${(job.skills || []).slice(0, 2).join(" and ") || "role"} requirements, and emphasized your work shipping consumer-grade product.`
@@ -50,12 +100,15 @@ export function ApplyDialog({
 
   const handleSubmit = async () => {
     if (!job) return;
+    const directRunId = `direct_${Math.random().toString(36).substring(2, 11)}`;
+    setActiveRunId(directRunId);
     setPhase("submitting");
     setErrorMsg("");
+    setConsoleLogs(["Initializing direct automation execution..."]);
+    
     try {
-      const activeRunId = runId || localStorage.getItem("aria.active_run_id") || "manual_enqueue";
       const payload = {
-        run_id: activeRunId,
+        run_id: directRunId,
         job_id: job.id,
         job_title: job.title,
         job_company: job.company,
@@ -64,19 +117,15 @@ export function ApplyDialog({
       };
       console.log("Sending apply payload:", payload);
       
-      // Save active run ID to localStorage and fire custom event to wake up WebSocket stream
-      localStorage.setItem("aria.active_run_id", activeRunId);
-      window.dispatchEvent(new CustomEvent("aria:run_started", { detail: activeRunId }));
+      localStorage.setItem("aria.active_run_id", directRunId);
+      window.dispatchEvent(new CustomEvent("aria:run_started", { detail: directRunId }));
       
       await api.enqueueForAutoApply(payload);
       
-      // Invalidate active router layout to instantly reload Applications Board data
       router.invalidate();
-      
-      setPhase("done");
     } catch (err: any) {
       console.error(err);
-      setErrorMsg(err.message || "Failed to enqueue application.");
+      setErrorMsg(err.message || "Failed to launch application automation.");
       setPhase("ready");
     }
   };
@@ -175,9 +224,19 @@ export function ApplyDialog({
               )}
 
               {phase === "submitting" && (
-                <div className="py-12 text-center">
-                  <Loader2 className="h-6 w-6 animate-spin text-accent mx-auto" />
-                  <div className="mt-3 text-sm text-muted-foreground">Queuing application with the AutoApply coordinator...</div>
+                <div className="py-6 space-y-4 text-center">
+                  <Loader2 className="h-8 w-8 animate-spin text-accent mx-auto" />
+                  <div className="text-sm font-medium text-foreground">Launching browser automation...</div>
+                  <div 
+                    ref={logContainerRef}
+                    className="bg-black/90 text-green-400 font-mono text-xs rounded-xl p-4 h-64 overflow-y-auto space-y-1 text-left border border-border"
+                  >
+                    {consoleLogs.map((logLine, idx) => (
+                      <div key={idx} className="whitespace-pre-wrap">
+                        {logLine}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -186,9 +245,9 @@ export function ApplyDialog({
                   <div className="mx-auto h-12 w-12 rounded-2xl bg-accent/15 text-accent flex items-center justify-center">
                     <CheckCircle2 className="h-6 w-6" />
                   </div>
-                  <h4 className="mt-4 font-display text-xl">Queued for Auto-Apply</h4>
+                  <h4 className="mt-4 font-display text-xl">Direct Application Finished</h4>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    The AutoApply Agent will process this application in the background. You can monitor the progress inside the AI Agents pipeline.
+                    The browser automation finished executing the direct hit path. You can check the browser window or the application history.
                   </p>
                 </div>
               )}
@@ -213,15 +272,6 @@ export function ApplyDialog({
                     className="rounded-full border border-border px-5 py-2 text-sm font-medium hover:bg-muted"
                   >
                     Close
-                  </button>
-                  <button
-                    onClick={() => {
-                      onClose();
-                      router.navigate({ to: "/app/agents" });
-                    }}
-                    className="rounded-full bg-foreground text-background px-5 py-2 text-sm font-medium hover:opacity-90"
-                  >
-                    Track Agent Progress
                   </button>
                 </div>
               )}

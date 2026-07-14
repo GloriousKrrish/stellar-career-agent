@@ -223,21 +223,22 @@ async def run_full_workflow(
                         f"Top match: {top.overall_match}% - {top.title} at {top.company}",
                         {"top_matches": [j.model_dump(mode="json") for j in scored_jobs[:5]]})
 
-        # ── Step 5: Enqueue for AutoApply ─────────────────────────────────────
-        try:
-            from agents.orchestrator import enqueue_discovered_jobs
-            enqueued = enqueue_discovered_jobs(
-                user_id=user_profile.id,
-                run_id=run_id,
-                scored_jobs=scored_jobs,
-                auto_apply_threshold=70,
-            )
-            if enqueued > 0:
-                await _emit(run_id, "agent_update", "AutoApply",
-                            f"Queued {enqueued} high-match jobs for autonomous application",
-                            {"enqueued": enqueued})
-        except Exception as e:
-            log.warning(f"AutoApply enqueue failed (non-fatal): {e}")
+        # ── Step 5: Enqueue for AutoApply (Bypassed) ──────────────────────────
+        # try:
+        #     from agents.orchestrator import enqueue_discovered_jobs
+        #     enqueued = enqueue_discovered_jobs(
+        #         user_id=user_profile.id,
+        #         run_id=run_id,
+        #         scored_jobs=scored_jobs,
+        #         auto_apply_threshold=70,
+        #     )
+        #     if enqueued > 0:
+        #         await _emit(run_id, "agent_update", "AutoApply",
+        #                     f"Queued {enqueued} high-match jobs for autonomous application",
+        #                     {"enqueued": enqueued})
+        # except Exception as e:
+        #     log.warning(f"AutoApply enqueue failed (non-fatal): {e}")
+        pass
 
         # ── Step 6: Done ──────────────────────────────────────────────────────
         state.status = "completed"
@@ -356,21 +357,22 @@ async def run_job_search_workflow(
 
         db.db_update_task_heartbeat(run_id, current_page=3, status="completed")
 
-        # ── Step 5: Enqueue for AutoApply ─────────────────────────────────────
-        try:
-            from agents.orchestrator import enqueue_discovered_jobs
-            enqueued = enqueue_discovered_jobs(
-                user_id=dummy_profile.id,
-                run_id=run_id,
-                scored_jobs=scored,
-                auto_apply_threshold=70,
-            )
-            if enqueued > 0:
-                await _emit(run_id, "agent_update", "AutoApply",
-                            f"Queued {enqueued} high-match jobs for autonomous application",
-                            {"enqueued": enqueued})
-        except Exception as e:
-            log.warning(f"AutoApply enqueue failed (non-fatal): {e}")
+        # ── Step 5: Enqueue for AutoApply (Bypassed) ──────────────────────────
+        # try:
+        #     from agents.orchestrator import enqueue_discovered_jobs
+        #     enqueued = enqueue_discovered_jobs(
+        #         user_id=dummy_profile.id,
+        #         run_id=run_id,
+        #         scored_jobs=scored,
+        #         auto_apply_threshold=70,
+        #     )
+        #     if enqueued > 0:
+        #         await _emit(run_id, "agent_update", "AutoApply",
+        #                     f"Queued {enqueued} high-match jobs for autonomous application",
+        #                     {"enqueued": enqueued})
+        # except Exception as e:
+        #     log.warning(f"AutoApply enqueue failed (non-fatal): {e}")
+        pass
 
         await _emit(run_id, "completed", "Aria", f"Found {len(scored)} matched roles for '{role}'",
                     {"jobs": [j.model_dump(mode="json") for j in scored[:10]]})

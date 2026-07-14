@@ -96,35 +96,6 @@ function AgentCard({ a }: { a: Agent }) {
   );
 }
 
-function Workflow() {
-  const steps = ["Resume", "Discovery", "Matching", "Orchestrator", "Auto Apply", "Tracking", "Interview"];
-  return (
-    <div className="rounded-2xl border border-border bg-card p-6 shadow-soft">
-      <div className="flex items-center justify-between mb-4">
-        <div className="font-display text-lg">Agent workflow</div>
-        <span className="text-xs text-accent inline-flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full bg-accent pulse-ring relative" />
-          Live
-        </span>
-      </div>
-      <div className="flex items-center overflow-x-auto pb-2 gap-1">
-        {steps.map((s, i) => (
-          <div key={s} className="flex items-center gap-1 flex-shrink-0">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-              transition={{ duration: 0.4, delay: i * 0.08 }}
-              className="rounded-xl bg-muted px-4 py-2.5 text-xs font-medium"
-            >
-              {s}
-            </motion.div>
-            {i < steps.length - 1 && <ArrowRight className="h-3 w-3 text-muted-foreground" />}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function AgentsPage() {
   // Initialize with empty-metrics placeholders (no fake data)
   const [agents, setAgents] = useState<Agent[]>(AGENTS);
@@ -180,7 +151,6 @@ function AgentsPage() {
           : "Loading live data..."}
       </div>
 
-      <Workflow />
       <Stagger className="mt-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {agents.map((a) => (
           <StaggerItem key={a.id}><AgentCard a={a} /></StaggerItem>
