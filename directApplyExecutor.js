@@ -1,214 +1,125 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
+/**
+ * directApplyExecutor.js
+ * Standalone Node.js Playwright browser automation worker.
+ * Called by the Python backend as a subprocess:
+ *   node directApplyExecutor.js <job_url>
+ *
+ * Logs all progress to stdout so the Python parent can stream it.
+ */
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Intercept console.log and console.error to write synchronously to stdout/stderr.
-// This bypasses stream buffering and ensures the Python subprocess receives the logs instantly.
-const originalLog = console.log;
-const originalError = console.error;
-
-console.log = function (...args) {
-    const msg = args.join(' ');
-    try {
-        fs.writeSync(1, msg + '\n');
-    } catch (e) {
-        originalLog.apply(console, args);
-    }
-};
-
-console.error = function (...args) {
-    const msg = args.join(' ');
-    try {
-        fs.writeSync(2, msg + '\n');
-    } catch (e) {
-        originalError.apply(console, args);
-    }
-};
+import { chromium } from 'playwright';
 
 const jobUrl = process.argv[2];
+
 if (!jobUrl) {
-    console.error("[directApplyExecutor] Error: No job URL provided.");
+    console.error("❌ Error: No job URL provided. Usage: node directApplyExecutor.js <url>");
     process.exit(1);
 }
 
-console.log(`[directApplyExecutor] Target URL: ${jobUrl}`);
+(async () => {
+    console.log(`⏳ STEP 1: Starting browser automation for: ${jobUrl}`);
 
-let browser;
-let page;
-
-function findCookieFile(domain) {
-    const filenames = {
-        'naukri.com': 'naukri.json',
-        'glassdoor.com': 'glassdoor.json',
-        'glassdoor.co.in': 'glassdoor.json',
-        'linkedin.com': 'linkedin.json',
-        'indeed.com': 'indeed.json'
-    };
-    
-    let targetFile = null;
-    for (const [key, val] of Object.entries(filenames)) {
-        if (domain.includes(key)) {
-            targetFile = val;
-            break;
-        }
-    }
-    
-    if (!targetFile) return null;
-    
-    const paths = [
-        path.join(__dirname, 'stellar-backend', 'cookies', targetFile),
-        path.join(__dirname, 'cookies', targetFile),
-        path.join(process.cwd(), 'stellar-backend', 'cookies', targetFile),
-        path.join(process.cwd(), 'cookies', targetFile)
-    ];
-    
-    for (const p of paths) {
-        if (fs.existsSync(p)) {
-            return p;
-        }
-    }
-    return null;
-}
-
-async function injectCookiesPlaywright(context, url) {
+    let browser = null;
     try {
-        const domain = new URL(url).hostname;
-        const cookiePath = findCookieFile(domain);
-        if (!cookiePath) {
-            console.log(`[directApplyExecutor] No active session cookies found for domain: ${domain}`);
-            return;
-        }
-        
-        const cookiesRaw = fs.readFileSync(cookiePath, 'utf8');
-        const cookies = JSON.parse(cookiesRaw);
-        if (Array.isArray(cookies)) {
-            const formatted = cookies.map(c => ({
-                name: c.name,
-                value: c.value,
-                domain: c.domain || `.${domain}`,
-                path: c.path || '/'
-            }));
-            await context.addCookies(formatted);
-            console.log(`[directApplyExecutor] Injected ${formatted.length} cookies from ${path.basename(cookiePath)}`);
-        }
-    } catch (err) {
-        console.error(`[directApplyExecutor] Cookie injection failed: ${err.message}`);
-    }
-}
+        console.log("⏳ STEP 2: Launching headful Chromium browser...");
+        browser = await chromium.launch({
+            headless: false,
+            slowMo: 1200,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-blink-features=AutomationControlled',
+                '--start-maximized',
+            ]
+        });
+        console.log("✅ STEP 3: Browser launched successfully!");
 
-async function injectCookiesPuppeteer(page, url) {
-    try {
-        const domain = new URL(url).hostname;
-        const cookiePath = findCookieFile(domain);
-        if (!cookiePath) {
-            console.log(`[directApplyExecutor] No active session cookies found for domain: ${domain}`);
-            return;
-        }
-        
-        const cookiesRaw = fs.readFileSync(cookiePath, 'utf8');
-        const cookies = JSON.parse(cookiesRaw);
-        if (Array.isArray(cookies)) {
-            const formatted = cookies.map(c => ({
-                name: c.name,
-                value: c.value,
-                domain: c.domain || `.${domain}`,
-                path: c.path || '/'
-            }));
-            await page.setCookie(...formatted);
-            console.log(`[directApplyExecutor] Injected ${formatted.length} cookies from ${path.basename(cookiePath)}`);
-        }
-    } catch (err) {
-        console.error(`[directApplyExecutor] Cookie injection failed: ${err.message}`);
-    }
-}
+        console.log("⏳ STEP 4: Creating browser context with stealth settings...");
+        const context = await browser.newContext({
+            viewport: { width: 1366, height: 768 },
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            locale: 'en-US',
+        });
 
-async function launchBrowser() {
-    const launchPromise = (async () => {
+        // Inject stealth overrides
+        await context.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+            window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        });
+
+        const page = await context.newPage();
+        console.log("✅ STEP 4 complete: New stealth page created.");
+
+        console.log(`⏳ STEP 5: Navigating to job URL...`);
         try {
-            console.log("[directApplyExecutor] Attempting to launch Playwright...");
-            const { chromium } = await import('playwright');
-            const pwBrowser = await chromium.launch({
-                headless: false,
-                timeout: 15000,
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-extensions']
-            });
-            const context = await pwBrowser.newContext();
-            await injectCookiesPlaywright(context, jobUrl);
-            const pwPage = await context.newPage();
-            console.log("[directApplyExecutor] Playwright initialized successfully.");
-            return { browser: pwBrowser, page: pwPage, type: 'playwright' };
-        } catch (pwError) {
-            console.log(`[directApplyExecutor] Playwright initialization failed/skipped: ${pwError.message}`);
-            console.log("[directApplyExecutor] Attempting fallback to Puppeteer...");
-            
-            const puppeteer = (await import('puppeteer')).default;
-            const pupBrowser = await puppeteer.launch({
-                headless: false,
-                timeout: 15000,
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-extensions']
-            });
-            const pupPage = await pupBrowser.newPage();
-            await injectCookiesPuppeteer(pupPage, jobUrl);
-            console.log("[directApplyExecutor] Puppeteer initialized successfully.");
-            return { browser: pupBrowser, page: pupPage, type: 'puppeteer' };
+            await page.goto(jobUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+            console.log(`✅ STEP 5: Navigated to: ${page.url()}`);
+        } catch (navErr) {
+            console.error(`❌ Navigation failed: ${navErr.message}`);
+            await browser.close();
+            process.exit(1);
         }
-    })();
 
-    // Race with a strict 20-second global timeout
-    return Promise.race([
-        launchPromise,
-        new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Browser instantiation timed out.")), 20000)
-        )
-    ]);
-}
+        // Wait for page to settle
+        await page.waitForTimeout(2500);
 
-async function run() {
-    try {
-        if (process.platform === 'win32') {
+        // Try to find and click Apply button
+        console.log("⏳ STEP 6: Scanning for Apply button...");
+        const applySelectors = [
+            'a:has-text("Apply Now")',
+            'button:has-text("Apply Now")',
+            'a:has-text("Apply")',
+            'button:has-text("Apply")',
+            '[data-testid*="apply" i]',
+            'a[class*="apply" i]',
+            'button[class*="apply" i]',
+        ];
+
+        let clicked = false;
+        for (const selector of applySelectors) {
             try {
-                console.log("[directApplyExecutor] Cleaning up any lingering chromium/chrome processes on Windows...");
-                execSync('taskkill /F /IM chrome.exe /FI "WINDOWTITLE eq about:blank" /T 2>NUL', { stdio: 'ignore' });
-                execSync('taskkill /F /IM chromium.exe /T 2>NUL', { stdio: 'ignore' });
-            } catch (e) {
-                // Ignore process-not-found errors
+                const el = page.locator(selector).first();
+                if (await el.isVisible({ timeout: 2000 })) {
+                    console.log(`✅ Found Apply button: ${selector}`);
+                    await el.click();
+                    clicked = true;
+                    console.log("✅ STEP 6: Apply button clicked!");
+                    break;
+                }
+            } catch (_) {
+                // Try next selector
             }
         }
-        
-        const result = await launchBrowser();
-        browser = result.browser;
-        page = result.page;
+
+        if (!clicked) {
+            console.log("⚠️ STEP 6: No Apply button found — page may require manual review.");
+        }
+
+        // Wait briefly for any dialog/form to appear
+        await page.waitForTimeout(3000);
+
+        // Take a screenshot for audit
+        const screenshotPath = `./screenshots/autoapply_node_${Date.now()}.png`;
+        try {
+            await page.screenshot({ path: screenshotPath, fullPage: true });
+            console.log(`📸 Screenshot saved: ${screenshotPath}`);
+        } catch (_) {}
+
+        console.log("⏳ STEP 7: Closing browser...");
+        await browser.close();
+        console.log("✅ STEP 7: Browser closed cleanly. Automation complete.");
+        process.exit(0);
+
     } catch (err) {
-        console.error(`[directApplyExecutor] ❌ Failed: ${err.message}`);
+        console.error("\n❌ CRITICAL ERROR CAUGHT DURING RUNTIME:");
+        console.error(err.stack || err.message || String(err));
         if (browser) {
-            try {
-                await browser.close();
-            } catch (e) {}
+            try { await browser.close(); } catch (_) {}
         }
         process.exit(1);
     }
-
-    try {
-        console.log(`[directApplyExecutor] Navigating straight to: ${jobUrl}`);
-        await page.goto(jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        console.log("[directApplyExecutor] Page loaded successfully. Browser window is active.");
-        console.log("[directApplyExecutor] Direct hit path successful. Complete your application manually.");
-        
-        // Keep browser open indefinitely for manual action
-        await new Promise(() => {});
-    } catch (err) {
-        console.error(`[directApplyExecutor] ❌ Failed: Page navigation failed - ${err.message}`);
-        if (browser) {
-            try {
-                await browser.close();
-            } catch (e) {}
-        }
-        process.exit(1);
-    }
-}
-
-run();
+})();

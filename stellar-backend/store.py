@@ -13,6 +13,9 @@ _workflow_store: dict[str, WorkflowState] = {}
 # Run ID → list of queues (one per WebSocket subscriber)
 _ws_queues: dict[str, list[asyncio.Queue]] = defaultdict(list)
 
+# Run ID → list of published events
+_event_history: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
 # Agent name → AgentStatus
 _agent_statuses: dict[str, AgentStatus] = {}
 
@@ -48,7 +51,12 @@ def unsubscribe(run_id: str, q: asyncio.Queue) -> None:
         pass
 
 
+def get_event_history(run_id: str) -> list[dict[str, Any]]:
+    return _event_history[run_id]
+
+
 async def publish(run_id: str, event: dict[str, Any]) -> None:
+    _event_history[run_id].append(event)
     for q in list(_ws_queues.get(run_id, [])):
         await q.put(event)
 

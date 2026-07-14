@@ -42,20 +42,28 @@ function JobCard({ job, onAutoApply }: { job: Job; onAutoApply: (job: Job) => vo
 
   return (
     <HoverLift>
-      <Link
-        to="/app/jobs/$jobId"
-        params={{ jobId: job.id }}
+      <div
         className="block rounded-2xl border border-border bg-card p-5 shadow-soft hover:shadow-elegant transition-shadow"
       >
         <div className="flex items-start gap-4">
-          <div className="h-12 w-12 rounded-xl bg-foreground text-background flex items-center justify-center font-display text-lg flex-shrink-0 select-none">
+          <Link
+            to="/app/jobs/$jobId"
+            params={{ jobId: job.id }}
+            className="h-12 w-12 rounded-xl bg-foreground text-background flex items-center justify-center font-display text-lg flex-shrink-0 select-none hover:opacity-90"
+          >
             {job.companyLogo}
-          </div>
+          </Link>
           <div className="flex-1 min-w-0">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-xs text-muted-foreground">{job.company} · {job.postedAt}</div>
-                <div className="font-display text-lg leading-tight mt-0.5">{job.title}</div>
+                <Link
+                  to="/app/jobs/$jobId"
+                  params={{ jobId: job.id }}
+                  className="font-display text-lg leading-tight mt-0.5 block hover:text-accent transition-colors"
+                >
+                  {job.title}
+                </Link>
               </div>
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 <div className="relative h-12 w-12">
@@ -140,7 +148,7 @@ function JobCard({ job, onAutoApply }: { job: Job; onAutoApply: (job: Job) => vo
             </div>
           </div>
         </div>
-      </Link>
+      </div>
     </HoverLift>
   );
 }

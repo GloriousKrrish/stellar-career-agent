@@ -117,9 +117,6 @@ export function ApplyDialog({
       };
       console.log("Sending apply payload:", payload);
       
-      localStorage.setItem("aria.active_run_id", directRunId);
-      window.dispatchEvent(new CustomEvent("aria:run_started", { detail: directRunId }));
-      
       await api.enqueueForAutoApply(payload);
       
       router.invalidate();

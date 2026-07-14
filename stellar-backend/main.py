@@ -89,7 +89,18 @@ async def directApplyExecutor(job_url: str, run_id: str, user_id: str):
     if not os.path.exists(js_path):
         js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "directApplyExecutor.js")
         
-    cmd = ["node", js_path, job_url]
+    import shutil
+    node_path = shutil.which("node")
+    if not node_path:
+        # Common installation paths for Node on Windows
+        for path_option in ["C:\\Program Files\\nodejs\\node.exe", "C:\\Program Files (x86)\\nodejs\\node.exe"]:
+            if os.path.exists(path_option):
+                node_path = path_option
+                break
+        else:
+            node_path = "node"
+
+    cmd = [node_path, js_path, job_url]
     await emit_log("Spawning direct hit execution subprocess...")
     
     try:
@@ -970,6 +981,13 @@ async def websocket_run(websocket: WebSocket, run_id: str):
             "jobs_count": len(state.scored_jobs),
         })
 
+    # Replay all past events immediately to the client
+    for event in store.get_event_history(run_id):
+        try:
+            await websocket.send_json(event)
+        except Exception:
+            pass
+
     try:
         while True:
             try:
@@ -1142,14 +1160,44 @@ async def manual_enqueue_job(
     background_tasks: BackgroundTasks,
     current_user: dict[str, Any] = Depends(get_current_user),
 ):
-    """Manually trigger direct auto-application for a specific job."""
-    print(f"[AUTO-APPLY TRIGGER] Received manual direct apply request for job '{req.job_title}' at {req.job_company}")
-    
-    background_tasks.add_task(directApplyExecutor, req.job_url, req.run_id, current_user["id"])
-    
+    """Manually enqueue a specific job for auto-application via the Python orchestrator."""
+    print(f"[AUTO-APPLY TRIGGER] Received manual apply request from user {current_user['id']} for job '{req.job_title}' at {req.job_company}")
+
+    from agents.orchestrator import db_enqueue_job, process_single_autoapply_job
+
+    queue_id = db_enqueue_job(
+        user_id=current_user["id"],
+        run_id=req.run_id,
+        job_id=req.job_id,
+        job_title=req.job_title,
+        job_company=req.job_company,
+        job_url=req.job_url,
+        job_source=req.job_source,
+    )
+
+    # Build the queue entry dict that process_single_autoapply_job expects
+    new_entry = {
+        "id": queue_id,
+        "user_id": current_user["id"],
+        "run_id": req.run_id,
+        "job_id": req.job_id,
+        "job_title": req.job_title,
+        "job_company": req.job_company,
+        "job_url": req.job_url,
+        "job_source": req.job_source,
+        "status": "enqueued",
+        "attempts": 0,
+        "max_attempts": 3,
+    }
+
+    # Dispatch to the bulletproof Python orchestrator worker (fully async, awaited in BG)
+    background_tasks.add_task(process_single_autoapply_job, new_entry)
+    print(f"[AUTO-APPLY LAUNCHED] Spawned process_single_autoapply_job for task {queue_id[:8]} in background")
+
     return {
-        "status": "launched",
-        "message": f"Direct browser automation launched for {req.job_title} at {req.job_company}."
+        "status": "enqueued",
+        "queue_id": queue_id,
+        "message": f"Job '{req.job_title}' at {req.job_company} queued for auto-application.",
     }
 
 
