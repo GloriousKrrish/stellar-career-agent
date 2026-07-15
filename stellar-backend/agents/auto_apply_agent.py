@@ -676,7 +676,14 @@ class AutoApplyEngine:
             # instead of remaining on a search results page or an authentication page.
             current_url_lower = current_url.lower()
             is_auth_page = "login" in current_url_lower or "signin" in current_url_lower or "signup" in current_url_lower or "register" in current_url_lower or "auth" in current_url_lower
-            is_search_page = "search" in current_url_lower or "jobs/search" in current_url_lower or "jobs/browse" in current_url_lower or "job-search" in current_url_lower
+            
+            is_search_page = False
+            if "search" in current_url_lower or "jobs/search" in current_url_lower or "jobs/browse" in current_url_lower or "job-search" in current_url_lower:
+                # If there's a job ID parameter or if the path contains 'job-listings' or 'jobs/view', it is a details page!
+                has_job_id_param = any(param in current_url_lower for param in ["jobid", "job_id", "currentjobid"])
+                has_listing_path = any(path in current_url_lower for path in ["job-listings", "jobs/view", "/jobs/"])
+                if not (has_job_id_param or has_listing_path):
+                    is_search_page = True
             
             if is_auth_page:
                 auth_reason = "Verification Failed: Browser is on an authentication/login page instead of job details page."
