@@ -21,6 +21,8 @@ Author: Stellar Career Agent Platform
 from __future__ import annotations
 import asyncio
 import os
+import sys
+import threading
 import uuid
 from datetime import datetime
 from typing import Any, Optional
@@ -336,6 +338,59 @@ async def _emit_autoapply_event(
             log.error(f"Failed to save agent log: {e}")
 
 
+def run_autoapply_job_in_thread(entry: dict) -> None:
+    """
+    Fire-and-forget: Runs the async process_single_autoapply_job in a new daemon thread
+    with its own event loop and WindowsProactorEventLoopPolicy.
+    Used for immediate API triggers.
+    """
+    def worker():
+        if sys.platform == "win32":
+            try:
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            except Exception:
+                pass
+        thread_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(thread_loop)
+        try:
+            thread_loop.run_until_complete(process_single_autoapply_job(entry))
+        finally:
+            thread_loop.close()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+
+async def run_coro_in_thread(coro_func, *args) -> Any:
+    """
+    Awaited: Runs an async coroutine function in a background thread with its own
+    ProactorEventLoop, returning the result asynchronously to the main event loop.
+    Used in the orchestrator loop to preserve concurrency and cooldown pacing.
+    """
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def worker():
+        if sys.platform == "win32":
+            try:
+                asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+            except Exception:
+                pass
+        thread_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(thread_loop)
+        try:
+            res = thread_loop.run_until_complete(coro_func(*args))
+            loop.call_soon_threadsafe(future.set_result, res)
+        except Exception as e:
+            loop.call_soon_threadsafe(future.set_exception, e)
+        finally:
+            thread_loop.close()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    return await future
+
+
 async def process_single_autoapply_job(entry: dict) -> None:
     """
     Execute the full auto-apply browser automation process for a single queued entry.
@@ -622,7 +677,7 @@ async def run_orchestrator_loop() -> None:
 
             async def process_job(entry: dict) -> None:
                 async with semaphore:
-                    await process_single_autoapply_job(entry)
+                    await run_coro_in_thread(process_single_autoapply_job, entry)
                     # Cooldown between applications
                     await asyncio.sleep(APPLY_COOLDOWN_SECONDS)
 

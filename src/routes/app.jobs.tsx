@@ -504,7 +504,7 @@ function JobsPage() {
       )}
       <ApplyDialog
         job={selectedJobForApply}
-        runId={activeRunId || localStorage.getItem("aria.active_run_id") || null}
+        runId={activeRunId || (typeof window !== "undefined" ? window.localStorage.getItem("aria.active_run_id") : null)}
         onClose={() => setSelectedJobForApply(null)}
       />
     </>

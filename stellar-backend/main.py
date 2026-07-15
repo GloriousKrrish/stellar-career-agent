@@ -72,84 +72,8 @@ from agents.application_agent import ApplicationAgent
 from fastapi import Header
 from auth import RegisterRequest, LoginRequest, register_user, login_user, get_user_by_token, GoogleLoginRequest, google_auth_user
 
-
 log = get_logger("API")
 settings = get_settings()
-
-
-async def directApplyExecutor(job_url: str, run_id: str, user_id: str):
-    import asyncio
-    import os
-    import sys
-    
-    async def emit_log(msg: str, event_type: str = "log"):
-        from models import LiveEvent
-        import store
-        import db
-        print(f"[directApplyExecutor] {msg}")
-        event = LiveEvent(
-            run_id=run_id,
-            event_type=event_type,
-            agent="AutoApplyAgent",
-            message=msg,
-            data={},
-        )
-        await store.publish(run_id, event.model_dump(mode="json"))
-        if user_id:
-            try:
-                db.db_save_agent_log(user_id, "autoapply", msg, "info")
-            except Exception:
-                pass
-
-    await emit_log("🚀 Launching headful browser automation...")
-    
-    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    js_path = os.path.join(root_dir, "directApplyExecutor.js")
-    
-    if not os.path.exists(js_path):
-        js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "directApplyExecutor.js")
-        
-    import shutil
-    node_path = shutil.which("node")
-    if not node_path:
-        # Common installation paths for Node on Windows
-        for path_option in ["C:\\Program Files\\nodejs\\node.exe", "C:\\Program Files (x86)\\nodejs\\node.exe"]:
-            if os.path.exists(path_option):
-                node_path = path_option
-                break
-        else:
-            node_path = "node"
-
-    cmd = [node_path, js_path, job_url]
-    await emit_log("Spawning direct hit execution subprocess...")
-    
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=os.path.dirname(js_path)
-        )
-        
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            text = line.decode('utf-8', errors='replace').strip()
-            if text:
-                if "❌ Failed:" in text or "❌ Error:" in text or "❌" in text:
-                    await emit_log(text, "error")
-                else:
-                    await emit_log(text)
-                
-        await process.wait()
-        if process.returncode == 0:
-            await emit_log("✅ Browser automation finished successfully.", "completed")
-        else:
-            await emit_log(f"❌ Browser automation finished with exit code {process.returncode}.", "error")
-            
-    except Exception as e:
-        await emit_log(f"❌ Error executing browser automation: {str(e)}", "error")
 
 
 async def get_current_user(authorization: str = Header(None)) -> dict[str, Any]:
@@ -176,6 +100,8 @@ async def get_current_user_optional(authorization: str = Header(None)) -> dict[s
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Register the main event loop reference in store for thread-safe websocket streaming
+    store.set_main_loop(asyncio.get_running_loop())
     os.makedirs(settings.upload_dir, exist_ok=True)
     os.makedirs("screenshots", exist_ok=True)
     log.info("[Start] Stellar Career Agent API starting up")
@@ -750,7 +676,11 @@ async def get_learning_roadmap(run_id: str):
 # ─── Application ──────────────────────────────────────────────────────────────
 
 @app.post("/api/apply/{run_id}/{job_id}", tags=["Application"])
-async def apply_to_job(run_id: str, job_id: str, background_tasks: BackgroundTasks):
+async def apply_to_job(
+    run_id: str,
+    job_id: str,
+    current_user: Optional[dict[str, Any]] = Depends(get_current_user_optional),
+):
     """Trigger the direct application automation for a specific job."""
     state = store.get_workflow(run_id)
     if not state:
@@ -760,11 +690,41 @@ async def apply_to_job(run_id: str, job_id: str, background_tasks: BackgroundTas
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    background_tasks.add_task(directApplyExecutor, job.url, run_id, state.user_profile.id if state.user_profile else "anonymous")
-    
+    user_id = current_user["id"] if current_user else (state.user_profile.id if state.user_profile else "anonymous")
+
+    from agents.orchestrator import db_enqueue_job, run_autoapply_job_in_thread
+
+    queue_id = db_enqueue_job(
+        user_id=user_id,
+        run_id=run_id,
+        job_id=job.id,
+        job_title=job.title,
+        job_company=job.company,
+        job_url=job.url,
+        job_source=job.source or "Web",
+        initial_status="queued",
+    )
+
+    entry = {
+        "id": queue_id,
+        "user_id": user_id,
+        "run_id": run_id,
+        "job_id": job.id,
+        "job_title": job.title,
+        "job_company": job.company,
+        "job_url": job.url,
+        "job_source": job.source or "Web",
+        "status": "queued",
+        "attempts": 0,
+        "max_attempts": 3,
+    }
+
+    run_autoapply_job_in_thread(entry)
+
     return {
         "status": "launched",
-        "message": f"Direct automation launched for job URL: {job.url}"
+        "queue_id": queue_id,
+        "message": f"Direct automation launched for job '{job.title}' @ {job.company}"
     }
 
 
@@ -1177,13 +1137,12 @@ class ManualEnqueueRequest(BaseModel):
 @app.post("/api/autoapply/enqueue", tags=["AutoApply"])
 async def manual_enqueue_job(
     req: ManualEnqueueRequest,
-    background_tasks: BackgroundTasks,
     current_user: dict[str, Any] = Depends(get_current_user),
 ):
     """Manually enqueue a specific job for auto-application via the Python orchestrator."""
     print(f"[AUTO-APPLY TRIGGER] Received manual apply request from user {current_user['id']} for job '{req.job_title}' at {req.job_company}")
 
-    from agents.orchestrator import db_enqueue_job, process_single_autoapply_job
+    from agents.orchestrator import db_enqueue_job, run_autoapply_job_in_thread
 
     queue_id = db_enqueue_job(
         user_id=current_user["id"],
@@ -1208,14 +1167,14 @@ async def manual_enqueue_job(
         "job_company": req.job_company,
         "job_url": req.job_url,
         "job_source": req.job_source,
-        "status": "enqueued",
+        "status": "queued",
         "attempts": 0,
         "max_attempts": 3,
     }
 
-    # Dispatch to the bulletproof Python orchestrator worker (fully async, awaited in BG)
-    background_tasks.add_task(process_single_autoapply_job, new_entry)
-    print(f"[AUTO-APPLY LAUNCHED] Spawned process_single_autoapply_job for task {queue_id[:8]} in background")
+    # Dispatch to the background thread running a ProactorEventLoop
+    run_autoapply_job_in_thread(new_entry)
+    print(f"[AUTO-APPLY LAUNCHED] Spawned process_single_autoapply_job for task {queue_id[:8]} in background thread")
 
     return {
         "status": "enqueued",

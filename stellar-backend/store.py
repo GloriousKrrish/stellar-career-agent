@@ -38,6 +38,15 @@ def all_workflows() -> list[WorkflowState]:
 
 # ─── WebSocket pub/sub ────────────────────────────────────────────────────────
 
+# Store the main loop reference for thread-safe websocket events
+_main_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def set_main_loop(loop: asyncio.AbstractEventLoop) -> None:
+    global _main_loop
+    _main_loop = loop
+
+
 def subscribe(run_id: str) -> asyncio.Queue:
     q: asyncio.Queue = asyncio.Queue()
     _ws_queues[run_id].append(q)
@@ -57,8 +66,21 @@ def get_event_history(run_id: str) -> list[dict[str, Any]]:
 
 async def publish(run_id: str, event: dict[str, Any]) -> None:
     _event_history[run_id].append(event)
-    for q in list(_ws_queues.get(run_id, [])):
-        await q.put(event)
+    
+    current_loop = None
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+
+    if _main_loop and _main_loop.is_running() and current_loop != _main_loop:
+        def put_in_queue():
+            for q in list(_ws_queues.get(run_id, [])):
+                q.put_nowait(event)
+        _main_loop.call_soon_threadsafe(put_in_queue)
+    else:
+        for q in list(_ws_queues.get(run_id, [])):
+            await q.put(event)
 
 
 # ─── Agent status ─────────────────────────────────────────────────────────────
