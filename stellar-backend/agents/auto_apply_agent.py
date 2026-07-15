@@ -474,6 +474,97 @@ class AutoApplyEngine:
             path = ""
         return path
 
+    async def _perform_diagnostics(self, page: Any, logger: ResultLogger) -> None:
+        """
+        Dumps diagnostic information about the page elements to aid button detection.
+        Prints all button text, all anchor text, and matches containing keywords.
+        """
+        try:
+            await logger.log("🔍 Performing diagnostics scan on current page...")
+            
+            # Print every button text
+            buttons = await page.query_selector_all("button")
+            btn_texts = []
+            for b in buttons:
+                try:
+                    txt = (await b.inner_text() or "").strip().replace("\n", " ")
+                    if txt:
+                        btn_texts.append(txt)
+                except Exception:
+                    pass
+            if btn_texts:
+                await logger.log(f"🔘 Button elements found on page: {btn_texts}")
+            else:
+                await logger.log("🔘 No button elements with visible text found.")
+
+            # Print every anchor text
+            anchors = await page.query_selector_all("a")
+            anchor_texts = []
+            for a in anchors:
+                try:
+                    txt = (await a.inner_text() or "").strip().replace("\n", " ")
+                    if txt:
+                        anchor_texts.append(txt)
+                except Exception:
+                    pass
+            if anchor_texts:
+                await logger.log(f"⚓ Anchor elements (links) found on page: {anchor_texts}")
+            else:
+                await logger.log("⚓ No anchor elements with visible text found.")
+
+            # Print elements with key text: Apply, Easy Apply, Apply Now, Continue, Submit
+            keywords = ["apply", "easy apply", "apply now", "continue", "submit"]
+            matching_selectors = ["button", "a", "input[type='button']", "input[type='submit']", "div[role='button']", "span"]
+            matches_found = []
+            for sel in matching_selectors:
+                elements = await page.query_selector_all(sel)
+                for el in elements:
+                    try:
+                        txt = (await el.inner_text() or "").strip().replace("\n", " ")
+                        if txt and any(kw in txt.lower() for kw in keywords):
+                            matches_found.append(f"<{sel}>: '{txt}'")
+                    except Exception:
+                        pass
+            if matches_found:
+                await logger.log(f"🔎 Keyword matches found on page: {matches_found}")
+            else:
+                await logger.log("🔎 No keyword matching elements found on page.")
+        except Exception as e:
+            await logger.log(f"⚠️ Diagnostics scan failed: {e}")
+
+    async def _explain_missing_button_reason(self, page: Any, logger: ResultLogger) -> str:
+        """
+        Inspects the page to explain WHY an apply button is missing
+        (e.g., login pages, search results listing pages, captchas, blocked views, etc.)
+        """
+        try:
+            url = page.url.lower()
+            text = (await page.inner_text("body")).lower()
+            
+            # Check if we are on a login or register page
+            if "login" in url or "signin" in url or "register" in url or "signup" in url or "auth" in url:
+                return "The browser is locked on an authentication/login page. Session credentials or cookies are required."
+            
+            # Check for Google login button only (typical for login gates)
+            if "continue with google" in text and not any(kw in text for kw in ["easy apply", "apply now", "apply for this job"]):
+                return "The page is a login gate prompting 'Continue with Google'. Active session cookies or credentials are required."
+            
+            # Check if we are stuck on a search results page
+            if "search" in url or "jobs/search" in url or "jobs/browse" in url or "job-search" in url:
+                return "The browser is on a job search/browse results list page instead of the specific job details page."
+            
+            # Check for CAPTCHA/Challenge
+            if any(term in text for term in ["captcha", "cloudflare", "verify you are human", "challenge-form"]):
+                return "The page is blocked by a CAPTCHA or Cloudflare security challenge."
+            
+            # Check for expired/closed job
+            if any(term in text for term in ["no longer accepting applications", "job has expired", "position closed", "not accepting"]):
+                return "The job listing has expired or is no longer accepting applications."
+                
+            return "No matching button text or interactive element could be located on this job page layout."
+        except Exception as e:
+            return f"Failed to analyze page structure: {e}"
+
     async def run(
         self,
         task_id: str,
@@ -531,6 +622,11 @@ class AutoApplyEngine:
             try:
                 response = await page.goto(job_url, wait_until="domcontentloaded", timeout=45000)
                 await logger.log("✅ Navigation completed.")
+                
+                # REQUIREMENT 1: Log the current page URL for every job.
+                current_url = page.url
+                await logger.log(f"🔗 Current page URL: {current_url}")
+                
                 await _human_delay(2000, 4000)
             except Exception as nav_err:
                 error_detail = f"Navigation failed: {type(nav_err).__name__}: {str(nav_err)}"
@@ -544,6 +640,7 @@ class AutoApplyEngine:
 
             # Redirect ATS detection
             current_url = page.url
+            await logger.log(f"🔗 Page URL after navigation/redirects: {current_url}")
             ats_platform = self._is_external_ats(current_url)
             if ats_platform:
                 await logger.log(f"⚠️ Redirected to external ATS: {ats_platform}")
@@ -575,18 +672,81 @@ class AutoApplyEngine:
                     await logger.log("⚠️ Security Block: OTP verification code requested.")
                     return {"status": "requires_manual_intervention", "reason": "OTP requested", "screenshot": screenshot}
 
-            # Get Adapter
-            adapter = PlatformAdapterFactory.get_adapter(current_url, page, logger)
-
-            # Click Apply
-            await logger.log("📋 Scanning page for Apply trigger buttons...")
-            apply_clicked = await adapter.click_apply(task_id)
-            if not apply_clicked:
-                await logger.log("⚠️ No Apply button detected — marking for manual review")
+            # REQUIREMENT 11: Verify that the browser is actually opening the job details page
+            # instead of remaining on a search results page or an authentication page.
+            current_url_lower = current_url.lower()
+            is_auth_page = "login" in current_url_lower or "signin" in current_url_lower or "signup" in current_url_lower or "register" in current_url_lower or "auth" in current_url_lower
+            is_search_page = "search" in current_url_lower or "jobs/search" in current_url_lower or "jobs/browse" in current_url_lower or "job-search" in current_url_lower
+            
+            if is_auth_page:
+                auth_reason = "Verification Failed: Browser is on an authentication/login page instead of job details page."
+                await logger.log(f"❌ {auth_reason}")
                 screenshot = await self._take_screenshot(page, task_id)
                 return {
                     "status": "requires_manual_intervention",
-                    "reason": "Could not locate an Apply button on the job page",
+                    "reason": auth_reason,
+                    "screenshot": screenshot,
+                }
+            elif is_search_page:
+                search_reason = "Verification Failed: Browser is on a job search list page instead of specific job details page."
+                await logger.log(f"❌ {search_reason}")
+                screenshot = await self._take_screenshot(page, task_id)
+                return {
+                    "status": "requires_manual_intervention",
+                    "reason": search_reason,
+                    "screenshot": screenshot,
+                }
+
+            # Get Adapter
+            adapter = PlatformAdapterFactory.get_adapter(current_url, page, logger)
+            
+            # REQUIREMENT 2: Log the detected platform (LinkedIn, Naukri, Indeed, Glassdoor, Wellfound, Generic).
+            platform_name = adapter.__class__.__name__.replace("Adapter", "")
+            await logger.log(f"🎯 Detected platform: {platform_name}")
+
+            # REQUIREMENT 3: Before scanning, capture a screenshot.
+            pre_scan_screenshot = await self._take_screenshot(page, task_id)
+            await logger.log(f"📸 Pre-scan screenshot captured: {pre_scan_screenshot}")
+
+            # REQUIREMENT 4, 5, 6: Print button/anchor text and keyword-containing elements.
+            await self._perform_diagnostics(page, logger)
+
+            # Click Apply
+            await logger.log("📋 Scanning page for Apply trigger buttons...")
+            
+            # REQUIREMENT 8: Do not spend more than 10 seconds searching for an Apply button.
+            # REQUIREMENT 9: If no Apply button is found after 10 seconds, capture screenshot, log HTML, and continue immediately.
+            apply_clicked = False
+            try:
+                apply_clicked = await asyncio.wait_for(
+                    adapter.click_apply(task_id),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                await logger.log("⏱️ Timeout: Searching for Apply button took more than 10 seconds.")
+                apply_clicked = False
+            except Exception as click_err:
+                await logger.log(f"⚠️ Error while searching for Apply button: {click_err}")
+                apply_clicked = False
+
+            if not apply_clicked:
+                # REQUIREMENT 7: Explain WHY instead of only saying "No Apply button detected."
+                why_reason = await self._explain_missing_button_reason(page, logger)
+                await logger.log(f"⚠️ Apply button detection failed: {why_reason}")
+                
+                # REQUIREMENT 9: Capture screenshot
+                screenshot = await self._take_screenshot(page, task_id)
+                
+                # REQUIREMENT 9: Log page HTML
+                try:
+                    html_content = await page.content()
+                    await logger.log(f"📄 Page HTML (first 3000 chars):\n{html_content[:3000]}...")
+                except Exception as html_err:
+                    await logger.log(f"⚠️ Could not dump page HTML: {html_err}")
+
+                return {
+                    "status": "requires_manual_intervention",
+                    "reason": why_reason,
                     "screenshot": screenshot,
                 }
 
