@@ -1,7 +1,7 @@
 "use client";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Sparkles, Loader2, CheckCircle2, AlertTriangle, FileText, Mail, User2 } from "lucide-react";
-import { useEffect, useState, useRef } from "react";
+import { X, Sparkles, Loader2, CheckCircle2, AlertTriangle, FileText, Mail, User2, Pause, Play, MonitorSmartphone, Clock, ExternalLink } from "lucide-react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useRouter } from "@tanstack/react-router";
 import type { Job } from "@/lib/types";
 import { getCurrentUser } from "@/lib/auth";
@@ -9,6 +9,16 @@ import { api, API_BASE_URL } from "@/lib/api";
 
 type Phase = "drafting" | "ready" | "submitting" | "done";
 type OutcomeStatus = "applied" | "simulated" | "requires_manual_intervention" | "failed" | "skipped" | null;
+
+interface HITLPause {
+  taskId: string;
+  reason: string;
+  reasonKey: string;
+  platform: string;
+  currentUrl: string;
+  screenshot: string;
+  pausedAt: string;
+}
 
 export function ApplyDialog({
   job,
@@ -29,6 +39,11 @@ export function ApplyDialog({
   const [outcomeReason, setOutcomeReason] = useState("");
   const [debugMode, setDebugMode] = useState(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
+
+  // HITL state
+  const [hitlPause, setHitlPause] = useState<HITLPause | null>(null);
+  const [hitlElapsed, setHitlElapsed] = useState(0);
+  const [hitlLoading, setHitlLoading] = useState(false);
 
   const user = getCurrentUser() || {
     name: "Job Seeker",
@@ -56,6 +71,19 @@ export function ApplyDialog({
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [consoleLogs]);
+
+  // HITL elapsed timer
+  useEffect(() => {
+    if (!hitlPause) {
+      setHitlElapsed(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      const pausedAt = new Date(hitlPause.pausedAt + "Z").getTime();
+      setHitlElapsed(Math.floor((Date.now() - pausedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [hitlPause]);
 
   useEffect(() => {
     if (phase !== "submitting" || !activeRunId) return;
@@ -92,16 +120,43 @@ export function ApplyDialog({
     socket.onmessage = (event) => {
       try {
         const raw = JSON.parse(event.data);
+
+        // Check for HITL structured event inside log messages
         if (raw.message) {
+          try {
+            const parsed = JSON.parse(raw.message);
+            if (parsed.__hitl_event__ && parsed.event_type === "paused_waiting_for_user") {
+              setHitlPause({
+                taskId: parsed.task_id,
+                reason: parsed.reason,
+                reasonKey: parsed.reason_key,
+                platform: parsed.platform,
+                currentUrl: parsed.current_url,
+                screenshot: parsed.screenshot,
+                pausedAt: parsed.paused_at,
+              });
+              setConsoleLogs((prev) => [...prev, `⏸️ PAUSED — ${parsed.reason}. Complete the action in the browser window.`]);
+              return;
+            }
+          } catch { /* not JSON, normal log */ }
           setConsoleLogs((prev) => [...prev, raw.message]);
+        }
+
+        // Check for HITL resume (automation continued after user action)
+        if (raw.message && typeof raw.message === "string") {
+          if (raw.message.includes("[HITL] User clicked") || raw.message.includes("[HITL] Continue signal")) {
+            setHitlPause(null);
+          }
         }
 
         // Primary terminal event from the orchestrator
         if (raw.event_type === "application_completed" || raw.event_type === "completed") {
+          setHitlPause(null);
           const status: OutcomeStatus = raw.data?.status || null;
           const reason = raw.data?.reason || "";
           settle(status, reason);
         } else if (raw.event_type === "error") {
+          setHitlPause(null);
           settle("failed", raw.message || "Browser automation failed");
         } else if (raw.event_type === "log" && raw.message) {
           // Only settle on explicit fatal crash messages in logs
@@ -361,11 +416,85 @@ export function ApplyDialog({
               )}
 
               {phase === "submitting" && (
-                <div className="py-6 space-y-4 text-center">
-                  <Loader2 className="h-8 w-8 animate-spin text-accent mx-auto" />
+                <div className="py-6 space-y-4">
+                  {/* HITL Pause Banner */}
+                  {hitlPause ? (
+                    <div className="rounded-2xl border-2 border-yellow-500/40 bg-yellow-500/5 p-5 space-y-4">
+                      <div className="flex items-center gap-3">
+                        <div className="h-10 w-10 rounded-xl bg-yellow-500/15 flex items-center justify-center">
+                          <Pause className="h-5 w-5 text-yellow-500" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold text-yellow-500 uppercase tracking-wide">Waiting for Your Action</div>
+                          <div className="text-xs text-muted-foreground mt-0.5">{hitlPause.reason}</div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-xl bg-muted/40 border border-border/60 p-3">
+                          <div className="text-[10px] text-muted-foreground uppercase font-semibold tracking-wider mb-1">Platform</div>
+                          <div className="text-sm font-medium capitalize">{hitlPause.platform}</div>
+                        </div>
+                        <div className="rounded-xl bg-muted/40 border border-border/60 p-3">
+                          <div className="text-[10px] text-muted-foreground uppercase font-semibold tracking-wider mb-1">Time Waiting</div>
+                          <div className="text-sm font-medium flex items-center gap-1.5">
+                            <Clock className="h-3.5 w-3.5 text-yellow-500" />
+                            {Math.floor(hitlElapsed / 60)}:{String(hitlElapsed % 60).padStart(2, "0")}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl bg-muted/40 border border-border/60 p-3">
+                        <div className="text-[10px] text-muted-foreground uppercase font-semibold tracking-wider mb-1">Current URL</div>
+                        <div className="text-xs font-mono text-foreground/70 truncate">{hitlPause.currentUrl}</div>
+                      </div>
+
+                      <div className="text-xs text-muted-foreground bg-muted/40 rounded-xl p-3 border border-border/40 leading-relaxed">
+                        Complete the login, CAPTCHA, or verification in the <strong>browser window</strong>, then click <strong>Continue Automation</strong> below.
+                        Your session will be saved for future jobs on this platform.
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          disabled={hitlLoading}
+                          onClick={async () => {
+                            setHitlLoading(true);
+                            try {
+                              await api.hitlContinue(hitlPause.taskId);
+                              setHitlPause(null);
+                            } catch (e) { console.error(e); }
+                            setHitlLoading(false);
+                          }}
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-emerald-600 text-white px-4 py-2.5 text-sm font-semibold hover:bg-emerald-700 transition disabled:opacity-50"
+                        >
+                          <Play className="h-4 w-4" />
+                          {hitlLoading ? "Resuming..." : "Continue Automation"}
+                        </button>
+                        <button
+                          disabled={hitlLoading}
+                          onClick={async () => {
+                            setHitlLoading(true);
+                            try {
+                              await api.hitlCancel(hitlPause.taskId);
+                              setHitlPause(null);
+                            } catch (e) { console.error(e); }
+                            setHitlLoading(false);
+                          }}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-red-500/50 bg-red-500/10 text-red-500 px-4 py-2.5 text-sm font-semibold hover:bg-red-500/20 transition disabled:opacity-50"
+                        >
+                          Cancel Job
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center">
+                      <Loader2 className="h-8 w-8 animate-spin text-accent mx-auto" />
+                    </div>
+                  )}
+
                   <div className="text-sm font-medium text-foreground flex items-center justify-between">
-                    <span>Launching browser automation...</span>
-                    {debugMode && (
+                    <span>{hitlPause ? "Automation paused — action required" : "Launching browser automation..."}</span>
+                    {debugMode && !hitlPause && (
                       <button
                         onClick={async () => {
                           if (activeRunId) {

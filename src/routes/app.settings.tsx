@@ -74,6 +74,17 @@ function SettingsPage() {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Platform sessions state
+  const [sessions, setSessions] = useState<Array<{
+    platform: string;
+    status: "active" | "expired" | "none";
+    saved_at: string | null;
+    expires_hint: string | null;
+    applications_count: number;
+    cookie_count: number;
+  }>>([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+
   const user = getCurrentUser() || {
     name: "Job Seeker",
     email: "",
@@ -85,10 +96,11 @@ function SettingsPage() {
     ? user.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)
     : "JS";
 
-  // Load browser settings from backend
+  // Load browser settings and active sessions from backend
   useEffect(() => {
     if (section === "Browser Automation") {
       loadBrowserSettings();
+      loadSessions();
     }
   }, [section]);
 
@@ -109,6 +121,31 @@ function SettingsPage() {
       setErrorMsg(err.message || "Failed to load browser automation settings.");
     } finally {
       setLoadingSettings(false);
+    }
+  };
+
+  const loadSessions = async () => {
+    setLoadingSessions(true);
+    try {
+      const data = await api.getSessions();
+      setSessions(data.sessions || []);
+    } catch (err) {
+      console.error("Failed to load platform sessions", err);
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
+  const handleClearSession = async (platform: string) => {
+    if (!confirm(`Are you sure you want to clear the saved login session for ${platform}?`)) {
+      return;
+    }
+    try {
+      await api.clearSession(platform);
+      setSuccessMsg(`Session for ${platform} cleared successfully.`);
+      loadSessions();
+    } catch (err: any) {
+      setErrorMsg(err.message || `Failed to clear session for ${platform}.`);
     }
   };
 
@@ -418,6 +455,93 @@ function SettingsPage() {
                       Save Browser Settings
                     </button>
                   </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Session Manager Dashboard */}
+          {section === "Browser Automation" && (
+            <div className="rounded-2xl border border-border bg-card p-6 shadow-soft space-y-6">
+              <div>
+                <h3 className="text-lg font-display font-semibold flex items-center gap-2 text-foreground">
+                  <CheckCircle2 className="h-5 w-5 text-accent" />
+                  Saved Platform Sessions
+                </h3>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Manage persistent login sessions and cookies cached by Human-in-the-Loop automation.
+                </p>
+              </div>
+
+              {loadingSessions ? (
+                <div className="flex items-center justify-center py-6">
+                  <Loader2 className="h-6 w-6 animate-spin text-accent" />
+                  <span className="ml-2 text-xs text-muted-foreground">Loading active sessions...</span>
+                </div>
+              ) : sessions.length === 0 ? (
+                <div className="text-center py-6 text-xs text-muted-foreground">
+                  No login sessions saved yet. Run browser automation to capture and persist sessions.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-border/60 text-muted-foreground font-semibold">
+                        <th className="py-2.5">Platform</th>
+                        <th className="py-2.5">Status</th>
+                        <th className="py-2.5">Saved At</th>
+                        <th className="py-2.5">Applications</th>
+                        <th className="py-2.5">Cookies</th>
+                        <th className="py-2.5 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/40">
+                      {sessions.map((s) => (
+                        <tr key={s.platform} className="hover:bg-muted/15 transition-colors">
+                          <td className="py-3 font-medium capitalize flex items-center gap-2">
+                            <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                            {s.platform}
+                          </td>
+                          <td className="py-3">
+                            {s.status === "active" && (
+                              <span className="bg-emerald-500/10 text-emerald-400 font-semibold px-2 py-0.5 rounded-md text-[10px]">
+                                Logged In / Active
+                              </span>
+                            )}
+                            {s.status === "expired" && (
+                              <span className="bg-amber-500/10 text-amber-400 font-semibold px-2 py-0.5 rounded-md text-[10px]">
+                                Session Expired
+                              </span>
+                            )}
+                            {s.status === "none" && (
+                              <span className="bg-neutral-800 text-muted-foreground px-2 py-0.5 rounded-md text-[10px]">
+                                No Session
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 text-muted-foreground">
+                            {s.saved_at ? new Date(s.saved_at).toLocaleString() : "Never"}
+                          </td>
+                          <td className="py-3 font-semibold text-foreground/90">
+                            {s.applications_count} submitted
+                          </td>
+                          <td className="py-3 text-muted-foreground">
+                            {s.cookie_count} cookies cached
+                          </td>
+                          <td className="py-3 text-right">
+                            {s.status !== "none" && (
+                              <button
+                                onClick={() => handleClearSession(s.platform)}
+                                className="text-red-400 hover:text-red-300 font-semibold hover:underline"
+                              >
+                                Clear Session
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>

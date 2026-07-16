@@ -258,4 +258,52 @@ export const api = {
       body: JSON.stringify(settings),
     });
   },
+
+  // HITL (Human-in-the-Loop)
+  async hitlContinue(taskId: string) {
+    return request<{ status: string; message: string }>(`/api/hitl/continue/${taskId}`, {
+      method: "POST",
+    });
+  },
+
+  async hitlCancel(taskId: string) {
+    return request<{ status: string; message: string }>(`/api/hitl/cancel/${taskId}`, {
+      method: "POST",
+    });
+  },
+
+  async getHitlPauses() {
+    return request<{
+      pauses: Array<{
+        task_id: string;
+        reason: string;
+        platform: string;
+        current_url: string;
+        screenshot_path: string;
+        paused_at: string;
+        signal: string;
+      }>;
+      total: number;
+    }>("/api/hitl/pauses");
+  },
+
+  // Session Management
+  async getSessions() {
+    return request<{
+      sessions: Array<{
+        platform: string;
+        status: "active" | "expired" | "none";
+        saved_at: string | null;
+        expires_hint: string | null;
+        applications_count: number;
+        cookie_count: number;
+      }>;
+    }>("/api/sessions");
+  },
+
+  async clearSession(platform: string) {
+    return request<{ status: string; message: string }>(`/api/sessions/${platform}/clear`, {
+      method: "POST",
+    });
+  },
 };

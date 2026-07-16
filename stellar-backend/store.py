@@ -102,3 +102,84 @@ def finish_debug_session(task_id: str) -> None:
 
 def is_debug_session_finished(task_id: str) -> bool:
     return task_id in _finished_debug_sessions
+
+
+# ─── HITL (Human-in-the-Loop) Automation Signals ─────────────────────────────
+# When the engine detects a login gate, CAPTCHA, OTP, etc., it pauses and waits
+# for the user to complete the required action.  The frontend sends a signal
+# (continue / cancel) which is picked up by the polling loop inside the engine.
+
+from dataclasses import dataclass, field as dc_field
+from datetime import datetime as _datetime
+
+
+@dataclass
+class HITLPauseState:
+    """Tracks a single paused automation task awaiting user intervention."""
+    task_id: str
+    reason: str                       # e.g. "Login required", "CAPTCHA detected"
+    platform: str                     # e.g. "naukri", "linkedin"
+    current_url: str
+    screenshot_path: str
+    paused_at: str                    # ISO timestamp
+    signal: str = "waiting"           # "waiting" | "continue" | "cancel" | "save_session"
+
+
+# task_id → HITLPauseState
+_hitl_pauses: dict[str, HITLPauseState] = {}
+
+
+def hitl_pause(
+    task_id: str,
+    reason: str,
+    platform: str,
+    current_url: str,
+    screenshot_path: str,
+) -> HITLPauseState:
+    """Register a new HITL pause for the given task."""
+    from datetime import timezone
+    state = HITLPauseState(
+        task_id=task_id,
+        reason=reason,
+        platform=platform,
+        current_url=current_url,
+        screenshot_path=screenshot_path,
+        paused_at=_datetime.now(timezone.utc).isoformat(),
+    )
+    _hitl_pauses[task_id] = state
+    return state
+
+
+def hitl_signal(task_id: str, signal: str) -> bool:
+    """
+    Send a signal to a paused task.
+    signal: "continue" | "cancel" | "save_session"
+    Returns True if the task was found and signalled.
+    """
+    if task_id in _hitl_pauses:
+        _hitl_pauses[task_id].signal = signal
+        return True
+    return False
+
+
+def hitl_get_signal(task_id: str) -> str:
+    """Read the current signal for a paused task. Returns 'waiting' if no signal yet."""
+    if task_id in _hitl_pauses:
+        return _hitl_pauses[task_id].signal
+    return "waiting"
+
+
+def hitl_get_pause(task_id: str) -> Optional[HITLPauseState]:
+    """Get the pause state for a task, or None."""
+    return _hitl_pauses.get(task_id)
+
+
+def hitl_clear(task_id: str) -> None:
+    """Remove the HITL pause state for a task (after resume or cancel)."""
+    _hitl_pauses.pop(task_id, None)
+
+
+def hitl_get_all_pauses() -> list[HITLPauseState]:
+    """Return all currently paused tasks."""
+    return list(_hitl_pauses.values())
+

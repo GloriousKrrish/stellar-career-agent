@@ -1445,7 +1445,85 @@ async def update_browser_settings(
 
 
 
+
+# ─── HITL (Human-in-the-Loop) ─────────────────────────────────────────────────
+
+@app.post("/api/hitl/continue/{task_id}", tags=["HITL"])
+async def hitl_continue(
+    task_id: str,
+    current_user: Optional[dict[str, Any]] = Depends(get_current_user_optional),
+):
+    """Signal a paused automation task to resume after user intervention."""
+    import store
+    found = store.hitl_signal(task_id, "continue")
+    if not found:
+        raise HTTPException(status_code=404, detail="No paused task found with this ID.")
+    return {"status": "success", "message": f"Task {task_id} signalled to continue."}
+
+
+@app.post("/api/hitl/cancel/{task_id}", tags=["HITL"])
+async def hitl_cancel(
+    task_id: str,
+    current_user: Optional[dict[str, Any]] = Depends(get_current_user_optional),
+):
+    """Signal a paused automation task to cancel."""
+    import store
+    found = store.hitl_signal(task_id, "cancel")
+    if not found:
+        raise HTTPException(status_code=404, detail="No paused task found with this ID.")
+    return {"status": "success", "message": f"Task {task_id} signalled to cancel."}
+
+
+@app.get("/api/hitl/pauses", tags=["HITL"])
+async def hitl_get_pauses(
+    current_user: Optional[dict[str, Any]] = Depends(get_current_user_optional),
+):
+    """List all currently paused automation tasks awaiting user action."""
+    import store
+    pauses = store.hitl_get_all_pauses()
+    return {
+        "pauses": [
+            {
+                "task_id": p.task_id,
+                "reason": p.reason,
+                "platform": p.platform,
+                "current_url": p.current_url,
+                "screenshot_path": p.screenshot_path,
+                "paused_at": p.paused_at,
+                "signal": p.signal,
+            }
+            for p in pauses
+        ],
+        "total": len(pauses),
+    }
+
+
+# ─── Session Management ──────────────────────────────────────────────────────
+
+@app.get("/api/sessions", tags=["Sessions"])
+async def get_sessions_status(
+    current_user: Optional[dict[str, Any]] = Depends(get_current_user_optional),
+):
+    """Get the status of all platform sessions (active, expired, none)."""
+    from session_manager import get_all_sessions_status
+    return {"sessions": get_all_sessions_status()}
+
+
+@app.post("/api/sessions/{platform}/clear", tags=["Sessions"])
+async def clear_session_endpoint(
+    platform: str,
+    current_user: Optional[dict[str, Any]] = Depends(get_current_user_optional),
+):
+    """Clear the saved session for a specific platform."""
+    from session_manager import clear_session
+    cleared = clear_session(platform)
+    if not cleared:
+        raise HTTPException(status_code=404, detail=f"No saved session found for platform '{platform}'.")
+    return {"status": "success", "message": f"Session for '{platform}' cleared."}
+
+
 # ─── Dev entry ────────────────────────────────────────────────────────────────
+
 
 if __name__ == "__main__":
     import uvicorn

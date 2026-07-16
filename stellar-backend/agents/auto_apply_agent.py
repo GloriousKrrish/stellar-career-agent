@@ -883,14 +883,260 @@ class PlatformAdapterFactory:
             return GenericAdapter(page, logger, debug_mode)
 
 
+# ── HITL intervention reason categories ──────────────────────────────────────
+HITL_REASONS = {
+    "login": "Login / Authentication required",
+    "captcha": "CAPTCHA / Human verification challenge",
+    "otp": "OTP / Verification code required",
+    "mfa": "Multi-factor authentication required",
+    "google_signin": "Google Sign-In gate detected",
+    "microsoft_login": "Microsoft Login gate detected",
+    "consent": "Consent / Cookie dialog requiring manual action",
+}
+
+
 class AutoApplyEngine:
     """
     Modular execution engine for AutoApply job automation.
-    Integrates cookies injection, page analysis, and adapters.
+    Integrates cookies injection, page analysis, adapters, and
+    Human-in-the-Loop (HITL) pause/resume for login gates & CAPTCHAs.
     """
     def __init__(self):
         self.screenshots_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "screenshots")
         os.makedirs(self.screenshots_dir, exist_ok=True)
+
+    # ── HITL Intervention Detection ───────────────────────────────────────────
+
+    async def _detect_intervention_needed(self, page: Any, logger: ResultLogger) -> Optional[str]:
+        """
+        Inspect the current page to determine if user intervention is required.
+        Returns one of the HITL_REASONS keys or None.
+        """
+        try:
+            url = page.url.lower()
+            text = (await page.inner_text("body")).lower()
+        except Exception:
+            return None
+
+        # Login / auth pages
+        if any(kw in url for kw in ["login", "signin", "sign-in", "signup", "sign-up", "register", "/auth"]):
+            return "login"
+
+        # Google Sign-In gate
+        if "continue with google" in text and "accounts.google.com" in url:
+            return "google_signin"
+        if "continue with google" in text and not any(kw in text for kw in ["easy apply", "apply now", "apply for this job"]):
+            return "google_signin"
+
+        # Microsoft Login gate
+        if "microsoft" in url and any(kw in text for kw in ["sign in", "enter your password", "enter your email"]):
+            return "microsoft_login"
+
+        # CAPTCHA / Cloudflare challenge
+        if any(term in text for term in ["captcha", "cloudflare", "verify you are human", "challenge-form",
+                                          "security check", "are you a human", "bot detection"]):
+            return "captcha"
+
+        # OTP / MFA
+        if any(term in text for term in ["enter otp", "one-time password", "verification code",
+                                          "enter the code", "we sent a code"]):
+            return "otp"
+        if any(term in text for term in ["two-factor", "two-step", "authenticator app", "multi-factor"]):
+            return "mfa"
+
+        # Consent / cookie dialogs (broad check)
+        if any(term in text for term in ["accept all cookies", "cookie consent", "i agree to the terms"]):
+            # Only flag if it's blocking the main content (modal-style)
+            try:
+                modal = await page.query_selector('[class*="consent"], [class*="cookie"], [id*="consent"], [id*="cookie-banner"]')
+                if modal and await modal.is_visible():
+                    return "consent"
+            except Exception:
+                pass
+
+        return None
+
+    # ── HITL Pause & Wait ─────────────────────────────────────────────────────
+
+    async def _hitl_wait_for_user(
+        self,
+        task_id: str,
+        reason_key: str,
+        platform: str,
+        page: Any,
+        context: Any,
+        logger: ResultLogger,
+        on_progress: Optional[Callable] = None,
+    ) -> str:
+        """
+        Pause automation and wait for the user to complete a required action.
+
+        1. Takes a screenshot.
+        2. Registers the pause in the HITL store.
+        3. Emits a ``paused_waiting_for_user`` WebSocket event.
+        4. Injects a visual overlay into the browser page.
+        5. Polls for user signal (continue / cancel).
+        6. On continue: saves session cookies and returns "continue".
+        7. On cancel: returns "cancel".
+        """
+        import store
+        from session_manager import save_session_from_browser, url_to_platform
+
+        reason_text = HITL_REASONS.get(reason_key, reason_key)
+        screenshot = await self._take_screenshot(page, task_id)
+        current_url = page.url
+
+        # Register pause in store
+        pause_state = store.hitl_pause(
+            task_id=task_id,
+            reason=reason_text,
+            platform=platform,
+            current_url=current_url,
+            screenshot_path=screenshot,
+        )
+
+        # Emit WebSocket event so the frontend shows the HITL dialog
+        await logger.log(f"⏸️ [HITL] PAUSED — {reason_text}")
+        await logger.log(f"⏸️ [HITL] Platform: {platform} | URL: {current_url}")
+        await logger.log(f"⏸️ [HITL] Complete the required action in the browser, then click 'Continue Automation' in the UI.")
+
+        # Emit structured event for the frontend
+        if on_progress:
+            import json
+            try:
+                await on_progress(json.dumps({
+                    "__hitl_event__": True,
+                    "event_type": "paused_waiting_for_user",
+                    "task_id": task_id,
+                    "reason": reason_text,
+                    "reason_key": reason_key,
+                    "platform": platform,
+                    "current_url": current_url,
+                    "screenshot": screenshot,
+                    "paused_at": pause_state.paused_at,
+                }))
+            except Exception:
+                pass
+
+        # Inject browser overlay
+        await self._inject_hitl_overlay(page, reason_text, platform)
+
+        # Poll for user signal
+        while True:
+            # Check if browser was closed
+            try:
+                if page.is_closed():
+                    await logger.log("🚪 [HITL] Browser closed by user during pause.")
+                    store.hitl_clear(task_id)
+                    return "cancel"
+            except Exception:
+                store.hitl_clear(task_id)
+                return "cancel"
+
+            # Check store signal
+            signal = store.hitl_get_signal(task_id)
+            if signal == "continue":
+                await logger.log("▶️ [HITL] User clicked 'Continue Automation' — resuming...")
+
+                # Save session after user completed login/action
+                resolved_platform = url_to_platform(page.url) or platform
+                try:
+                    await save_session_from_browser(context, page, resolved_platform)
+                    await logger.log(f"💾 [HITL] Session saved for {resolved_platform} — future jobs will reuse this login.")
+                except Exception as e:
+                    await logger.log(f"⚠️ [HITL] Session save failed: {e}")
+
+                store.hitl_clear(task_id)
+                return "continue"
+
+            elif signal == "cancel":
+                await logger.log("⛔ [HITL] User cancelled the paused job.")
+                store.hitl_clear(task_id)
+                return "cancel"
+
+            # Check for browser-side continue button click
+            try:
+                browser_signal = await page.evaluate("window.__stellarHITLSignal__")
+                if browser_signal == "continue":
+                    await page.evaluate("window.__stellarHITLSignal__ = null")
+                    await logger.log("▶️ [HITL] Continue signal received from browser overlay — resuming...")
+                    resolved_platform = url_to_platform(page.url) or platform
+                    try:
+                        await save_session_from_browser(context, page, resolved_platform)
+                        await logger.log(f"💾 [HITL] Session saved for {resolved_platform}")
+                    except Exception as e:
+                        await logger.log(f"⚠️ [HITL] Session save failed: {e}")
+                    store.hitl_clear(task_id)
+                    return "continue"
+            except Exception:
+                pass
+
+            await asyncio.sleep(1.0)
+
+    async def _inject_hitl_overlay(self, page: Any, reason: str, platform: str) -> None:
+        """Inject a floating overlay into the browser page telling the user what to do."""
+        try:
+            if page.is_closed():
+                return
+            script = f"""
+            (() => {{
+                let overlay = document.getElementById('stellar-hitl-overlay');
+                if (overlay) overlay.remove();
+                overlay = document.createElement('div');
+                overlay.id = 'stellar-hitl-overlay';
+                overlay.style.cssText = `
+                    position: fixed; top: 20px; right: 20px; z-index: 9999999;
+                    background: rgba(15, 23, 42, 0.97); color: #f8fafc;
+                    padding: 24px; border-radius: 16px; width: 340px;
+                    box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
+                    border: 1px solid rgba(251, 191, 36, 0.4);
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    backdrop-filter: blur(16px); user-select: none;
+                `;
+                overlay.innerHTML = `
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+                        <div style="width:10px;height:10px;border-radius:50%;background:#fbbf24;box-shadow:0 0 12px #fbbf24;animation:pulse 2s infinite;"></div>
+                        <span style="font-weight:700;color:#fbbf24;font-size:13px;letter-spacing:0.5px;">WAITING FOR YOUR ACTION</span>
+                    </div>
+                    <div style="margin-bottom:12px;">
+                        <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:600;margin-bottom:4px;">Reason</div>
+                        <div style="font-size:15px;font-weight:600;color:#f1f5f9;">{reason}</div>
+                    </div>
+                    <div style="margin-bottom:16px;">
+                        <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;font-weight:600;margin-bottom:4px;">Platform</div>
+                        <div style="font-size:14px;color:#e2e8f0;">{platform.title()}</div>
+                    </div>
+                    <div style="background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.2);border-radius:8px;padding:10px;margin-bottom:16px;">
+                        <div style="font-size:11px;color:#fbbf24;line-height:1.5;">Complete the login, CAPTCHA, or verification in this browser window. Once done, click the button below.</div>
+                    </div>
+                    <button id="stellar-hitl-continue" style="
+                        width:100%;padding:12px;border-radius:8px;border:none;
+                        background:#10b981;color:#fff;font-weight:700;cursor:pointer;
+                        font-size:14px;transition:background 0.2s;
+                    ">✓ Continue Automation</button>
+                `;
+                const style = document.createElement('style');
+                style.textContent = '@keyframes pulse {{ 0%,100%{{opacity:1}} 50%{{opacity:0.5}} }}';
+                overlay.appendChild(style);
+                document.body.appendChild(overlay);
+                document.getElementById('stellar-hitl-continue').onclick = () => {{
+                    window.__stellarHITLSignal__ = 'continue';
+                    document.getElementById('stellar-hitl-continue').innerText = 'Resuming...';
+                    document.getElementById('stellar-hitl-continue').disabled = true;
+                }};
+            }})();
+            """
+            await page.evaluate(script)
+        except Exception as e:
+            log.warning(f"Failed to inject HITL overlay: {e}")
+
+    async def _remove_hitl_overlay(self, page: Any) -> None:
+        """Remove the HITL overlay from the browser page."""
+        try:
+            if not page.is_closed():
+                await page.evaluate("document.getElementById('stellar-hitl-overlay')?.remove()")
+        except Exception:
+            pass
 
     def _is_external_ats(self, url: str) -> str | None:
         try:
@@ -1431,11 +1677,16 @@ Do not include any markdown wrappers or surrounding text.
                 # Step 1: Browser Launch Pause
                 await self._pause_and_screenshot("browser_launch", page, logger, task_id, debug_mode)
 
-                # Cookie injection
+                # Session injection (new SessionManager replaces legacy cookie injection)
+                from session_manager import inject_session, url_to_platform
+                platform_name_for_session = url_to_platform(job_url) or "unknown"
                 try:
-                    await self._inject_cookies(context, job_url, logger)
+                    session_injected = await inject_session(context, page, platform_name_for_session, logger)
+                    if not session_injected:
+                        # Fall back to legacy cookie files
+                        await self._inject_cookies(context, job_url, logger)
                 except Exception as e:
-                    log.warning(f"Cookie injection skipped: {e}")
+                    log.warning(f"Session/cookie injection skipped: {e}")
 
                 # Navigation
                 await logger.log(f"🔍 Navigating to: {job_url[:80]}...")
@@ -1500,14 +1751,27 @@ Do not include any markdown wrappers or surrounding text.
                         return {"status": "requires_manual_intervention", "reason": "Job listing closed", "screenshot": screenshot}
                     elif state == "blocked_captcha":
                         await logger.log("⚠️ Security Block: CAPTCHA / human verification challenge detected.")
-                        await logger.log(f"Explanation: adapter.click_apply was never reached because page state was 'blocked_captcha'.")
-                        await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
-                        return {"status": "requires_manual_intervention", "reason": "CAPTCHA challenge detected", "screenshot": screenshot}
+                        await logger.log("🔄 [HITL] Pausing for user to solve the CAPTCHA...")
+                        hitl_result = await self._hitl_wait_for_user(
+                            task_id, "captcha", platform_name_for_session,
+                            page, context, logger, on_progress
+                        )
+                        if hitl_result == "cancel":
+                            return {"status": "failed", "reason": "User cancelled during CAPTCHA challenge", "screenshot": screenshot}
+                        # User solved CAPTCHA — remove overlay and continue
+                        await self._remove_hitl_overlay(page)
+                        await logger.log("✅ [HITL] CAPTCHA resolved by user — continuing automation...")
                     elif state == "blocked_otp":
                         await logger.log("⚠️ Security Block: OTP verification code requested.")
-                        await logger.log(f"Explanation: adapter.click_apply was never reached because page state was 'blocked_otp'.")
-                        await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
-                        return {"status": "requires_manual_intervention", "reason": "OTP requested", "screenshot": screenshot}
+                        await logger.log("🔄 [HITL] Pausing for user to enter OTP...")
+                        hitl_result = await self._hitl_wait_for_user(
+                            task_id, "otp", platform_name_for_session,
+                            page, context, logger, on_progress
+                        )
+                        if hitl_result == "cancel":
+                            return {"status": "failed", "reason": "User cancelled during OTP verification", "screenshot": screenshot}
+                        await self._remove_hitl_overlay(page)
+                        await logger.log("✅ [HITL] OTP entered by user — continuing automation...")
 
                 # REQUIREMENT 11: Verify that the browser is actually opening the job details page
                 # instead of remaining on a search results page or an authentication page.
@@ -1522,16 +1786,32 @@ Do not include any markdown wrappers or surrounding text.
                         is_search_page = True
                 
                 if is_auth_page:
-                    auth_reason = "Verification Failed: Browser is on an authentication/login page instead of job details page."
-                    await logger.log(f"❌ {auth_reason}")
-                    await logger.log("Explanation: adapter.click_apply was never reached because browser redirected to an authentication page.")
-                    screenshot = await self._take_screenshot(page, task_id)
-                    await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
-                    return {
-                        "status": "requires_manual_intervention",
-                        "reason": auth_reason,
-                        "screenshot": screenshot,
-                    }
+                    await logger.log("⚠️ Browser redirected to an authentication/login page.")
+                    await logger.log("🔄 [HITL] Pausing for user to complete login...")
+
+                    # Detect specific login type
+                    intervention_type = await self._detect_intervention_needed(page, logger) or "login"
+                    hitl_result = await self._hitl_wait_for_user(
+                        task_id, intervention_type, platform_name_for_session,
+                        page, context, logger, on_progress
+                    )
+                    if hitl_result == "cancel":
+                        screenshot = await self._take_screenshot(page, task_id)
+                        return {"status": "failed", "reason": "User cancelled during login", "screenshot": screenshot}
+
+                    # User completed login — remove overlay and reload the job page
+                    await self._remove_hitl_overlay(page)
+                    await logger.log("✅ [HITL] Login completed — navigating back to job page...")
+                    try:
+                        await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
+                        await self._wait_for_page_render(page, logger)
+                        await _human_delay(2000, 4000)
+                        # Re-check URL
+                        current_url = page.url
+                        current_url_lower = current_url.lower()
+                    except Exception as nav_err:
+                        await logger.log(f"⚠️ Post-login navigation failed: {nav_err}")
+
                 elif is_search_page:
                     search_reason = "Verification Failed: Browser is on a job search list page instead of specific job details page."
                     await logger.log(f"❌ {search_reason}")
@@ -1753,6 +2033,14 @@ Do not include any markdown wrappers or surrounding text.
                     await _human_delay(2000, 4000)
                     final_screenshot = await self._take_screenshot(page, task_id)
                     await logger.log(f"✅ Application successfully submitted automatically!")
+
+                    # Increment session usage counter
+                    try:
+                        from session_manager import increment_session_app_count
+                        increment_session_app_count(platform_name_for_session)
+                    except Exception:
+                        pass
+
                     return {
                         "status": "applied",
                         "reason": f"Successfully submitted application for {job_title} at {job_company}",
