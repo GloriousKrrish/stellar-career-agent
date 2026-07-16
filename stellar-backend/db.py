@@ -138,6 +138,21 @@ def init_db():
         created_at TEXT NOT NULL
     )
     """)
+
+    # Create Resumes table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS resumes (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        filepath TEXT NOT NULL,
+        is_default BOOLEAN DEFAULT 0,
+        raw_text TEXT DEFAULT '',
+        skills TEXT DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+    """)
     
     conn.commit()
     conn.close()
@@ -848,4 +863,116 @@ def db_get_dashboard_counts(user_id: str) -> dict:
 
     conn.close()
     return counts
+
+
+# ─── Resume Management Operations ─────────────────────────────────────────────
+
+def db_save_resume(resume_data: dict) -> None:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    now = datetime.utcnow().isoformat()
+    if IS_POSTGRES:
+        cursor.execute("""
+        INSERT INTO resumes (
+            id, user_id, filename, filepath, is_default, raw_text, skills, created_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (id) DO UPDATE SET
+            filename = EXCLUDED.filename,
+            filepath = EXCLUDED.filepath,
+            is_default = EXCLUDED.is_default,
+            raw_text = EXCLUDED.raw_text,
+            skills = EXCLUDED.skills
+        """, (
+            resume_data["id"],
+            resume_data["user_id"],
+            resume_data["filename"],
+            resume_data["filepath"],
+            1 if resume_data.get("is_default") else 0,
+            resume_data.get("raw_text", ""),
+            json.dumps(resume_data.get("skills", [])),
+            resume_data.get("created_at", now)
+        ))
+    else:
+        cursor.execute("""
+        INSERT OR REPLACE INTO resumes (
+            id, user_id, filename, filepath, is_default, raw_text, skills, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            resume_data["id"],
+            resume_data["user_id"],
+            resume_data["filename"],
+            resume_data["filepath"],
+            1 if resume_data.get("is_default") else 0,
+            resume_data.get("raw_text", ""),
+            json.dumps(resume_data.get("skills", [])),
+            resume_data.get("created_at", now)
+        ))
+    conn.commit()
+    conn.close()
+
+def db_get_resumes_by_user(user_id: str) -> List[dict]:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    if IS_POSTGRES:
+        cursor.execute("SELECT * FROM resumes WHERE user_id = %s ORDER BY created_at DESC", (user_id,))
+    else:
+        cursor.execute("SELECT * FROM resumes WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    res = []
+    for r in rows:
+        d = dict(r)
+        d["skills"] = json.loads(d["skills"]) if d.get("skills") else []
+        d["is_default"] = bool(d["is_default"])
+        res.append(d)
+    return res
+
+def db_get_resume(resume_id: str) -> Optional[dict]:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    if IS_POSTGRES:
+        cursor.execute("SELECT * FROM resumes WHERE id = %s", (resume_id,))
+    else:
+        cursor.execute("SELECT * FROM resumes WHERE id = ?", (resume_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    d = dict(row)
+    d["skills"] = json.loads(d["skills"]) if d.get("skills") else []
+    d["is_default"] = bool(d["is_default"])
+    return d
+
+def db_delete_resume(resume_id: str) -> None:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    if IS_POSTGRES:
+        cursor.execute("DELETE FROM resumes WHERE id = %s", (resume_id,))
+    else:
+        cursor.execute("DELETE FROM resumes WHERE id = ?", (resume_id,))
+    conn.commit()
+    conn.close()
+
+def db_set_default_resume(user_id: str, resume_id: str) -> None:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    if IS_POSTGRES:
+        cursor.execute("UPDATE resumes SET is_default = 0 WHERE user_id = %s", (user_id,))
+        cursor.execute("UPDATE resumes SET is_default = 1 WHERE id = %s AND user_id = %s", (resume_id, user_id))
+    else:
+        cursor.execute("UPDATE resumes SET is_default = 0 WHERE user_id = ?", (user_id,))
+        cursor.execute("UPDATE resumes SET is_default = 1 WHERE id = ? AND user_id = ?", (resume_id, user_id))
+    conn.commit()
+    conn.close()
+
+def db_rename_resume(resume_id: str, filename: str) -> None:
+    conn = get_db_connection()
+    cursor = get_db_cursor(conn)
+    if IS_POSTGRES:
+        cursor.execute("UPDATE resumes SET filename = %s WHERE id = %s", (filename, resume_id))
+    else:
+        cursor.execute("UPDATE resumes SET filename = ? WHERE id = ?", (filename, resume_id))
+    conn.commit()
+    conn.close()
 

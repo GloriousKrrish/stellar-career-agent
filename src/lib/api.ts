@@ -214,10 +214,17 @@ export const api = {
     job_company: string;
     job_url: string;
     job_source?: string;
+    debug_mode?: boolean;
   }) {
     return request<{ status: string; queue_id: string; message: string }>("/api/autoapply/enqueue", {
       method: "POST",
       body: JSON.stringify(data),
+    });
+  },
+
+  async finishDebugSession(taskId: string) {
+    return request<{ status: string; message: string }>(`/api/autoapply/debug/finish/${taskId}`, {
+      method: "POST",
     });
   },
 };

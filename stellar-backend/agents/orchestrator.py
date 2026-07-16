@@ -79,9 +79,18 @@ def db_init_auto_apply_table() -> None:
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         applied_at TEXT DEFAULT '',
+        debug_mode BOOLEAN DEFAULT 0,
         FOREIGN KEY (user_id) REFERENCES users(id)
     )
     """)
+
+    try:
+        if database.IS_POSTGRES:
+            cursor.execute("ALTER TABLE auto_apply_queue ADD COLUMN IF NOT EXISTS debug_mode BOOLEAN DEFAULT FALSE")
+        else:
+            cursor.execute("ALTER TABLE auto_apply_queue ADD COLUMN debug_mode BOOLEAN DEFAULT 0")
+    except Exception:
+        pass
 
     conn.commit()
     conn.close()
@@ -97,6 +106,7 @@ def db_enqueue_job(
     job_url: str,
     job_source: str = "",
     initial_status: str = "discovered",
+    debug_mode: bool = False,
 ) -> str:
     """Insert a discovered job into the auto-apply queue.
     
@@ -115,19 +125,19 @@ def db_enqueue_job(
         cursor.execute("""
         INSERT INTO auto_apply_queue (
             id, user_id, run_id, job_id, job_title, job_company, job_url, job_source,
-            status, created_at, updated_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            status, created_at, updated_at, debug_mode
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (id) DO NOTHING
         """, (queue_id, user_id, run_id, job_id, job_title, job_company, job_url,
-              job_source, initial_status, now, now))
+              job_source, initial_status, now, now, debug_mode))
     else:
         cursor.execute("""
         INSERT OR IGNORE INTO auto_apply_queue (
             id, user_id, run_id, job_id, job_title, job_company, job_url, job_source,
-            status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            status, created_at, updated_at, debug_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (queue_id, user_id, run_id, job_id, job_title, job_company, job_url,
-              job_source, initial_status, now, now))
+              job_source, initial_status, now, now, 1 if debug_mode else 0))
 
     conn.commit()
     conn.close()
@@ -152,7 +162,7 @@ def db_enqueue_job(
     except Exception as app_err:
         log.error(f"Failed to create/update matching application on enqueue: {app_err}")
 
-    log.info(f"Enqueued job for auto-apply: {job_title} @ {job_company} (queue_id={queue_id[:8]}, status={initial_status})")
+    log.info(f"Enqueued job for auto-apply: {job_title} @ {job_company} (queue_id={queue_id[:8]}, status={initial_status}, debug_mode={debug_mode})")
     return queue_id
 
 
@@ -462,16 +472,158 @@ async def process_single_autoapply_job(entry: dict) -> None:
             work_history=user_data.get("work_history", []) if isinstance(user_data.get("work_history"), list) else [],
         )
 
-        # ── Find resume file ──────────────────────────────────────────────────
-        resume_path = ""
-        settings = get_settings()
-        run_id_for_resume = user_data.get("run_id", "")
-        if run_id_for_resume:
-            upload_dir = settings.upload_dir
-            for f in os.listdir(upload_dir) if os.path.isdir(upload_dir) else []:
-                if run_id_for_resume in f:
-                    resume_path = os.path.join(upload_dir, f)
+        # ── Find resume file (Phase 6 - Multiple Resumes Selection) ───────────
+        user_resumes = database.db_get_resumes_by_user(user_id)
+        selected_resume = None
+        
+        # If user has uploaded multiple resumes, use Gemini to recommend the best one
+        if len(user_resumes) > 1:
+            try:
+                import google.generativeai as genai
+                settings = get_settings()
+                if settings.gemini_api_key:
+                    genai.configure(api_key=settings.gemini_api_key)
+                    model = genai.GenerativeModel("gemini-2.5-flash")
+                    
+                    resume_list_str = "\n".join([
+                        f"- ID: {r['id']}, Filename: {r['filename']}, Skills: {', '.join(r['skills'])}"
+                        for r in user_resumes
+                    ])
+                    
+                    prompt = f"""
+You are an AI career assistant matching the best resume to a target job application.
+Candidate Resumes:
+{resume_list_str}
+
+Target Job:
+- Title: {entry['job_title']}
+- Company: {entry['job_company']}
+- URL: {job_url}
+
+Select the ID of the resume that is the most relevant and best fit for this job based on skills and keywords.
+Return ONLY the resume ID as plain text, with no extra characters or symbols.
+"""
+                    response = await model.generate_content_async(prompt)
+                    selected_id = response.text.strip()
+                    for r in user_resumes:
+                        if r["id"] in selected_id or selected_id in r["id"]:
+                            selected_resume = r
+                            break
+            except Exception as e:
+                log.warning(f"Failed to auto-select best resume via AI: {e}")
+                
+        if not selected_resume:
+            for r in user_resumes:
+                if r["is_default"]:
+                    selected_resume = r
                     break
+            if not selected_resume and user_resumes:
+                selected_resume = user_resumes[0]
+                
+        resume_path = ""
+        resume_raw_text = ""
+        if selected_resume:
+            resume_path = selected_resume["filepath"]
+            resume_raw_text = selected_resume.get("raw_text", "")
+            log.info(f"[{queue_id[:8]}] Selected best-fit resume: {selected_resume['filename']} (ID: {selected_resume['id']})")
+            await _emit_autoapply_event(
+                run_id, "log",
+                f"[AutoApplyAgent]: 📄 Selected best-fit resume: {selected_resume['filename']}",
+                user_id=user_id
+            )
+        else:
+            settings = get_settings()
+            run_id_for_resume = user_data.get("run_id", "")
+            if run_id_for_resume:
+                upload_dir = settings.upload_dir
+                for f in os.listdir(upload_dir) if os.path.isdir(upload_dir) else []:
+                    if run_id_for_resume in f:
+                        resume_path = os.path.join(upload_dir, f)
+                        break
+            if user_profile and user_profile.summary:
+                resume_raw_text = user_profile.summary
+
+        # Retrieve job description from workflow run
+        job_description = ""
+        try:
+            workflow_state = store.get_workflow(run_id)
+            if workflow_state and workflow_state.scored_jobs:
+                for j in workflow_state.scored_jobs:
+                    if j.id == entry["job_id"]:
+                        job_description = j.description
+                        break
+        except Exception as e:
+            log.warning(f"Failed to retrieve job description: {e}")
+
+        # ── Evaluate Job Match (Phase 4 - AI Job Matching) ────────────────────
+        threshold = 70
+        await _emit_autoapply_event(
+            run_id, "log",
+            f"[AutoApplyAgent]: 🔍 Evaluating job match fit for {entry['job_title']}...",
+            user_id=user_id
+        )
+        
+        evaluation = await agent.evaluate_job_match(
+            user=user_profile,
+            job_title=entry['job_title'],
+            job_company=entry['job_company'],
+            job_url=job_url,
+            resume_text=resume_raw_text or user_profile.summary,
+            threshold=threshold
+        )
+        
+        match_score = evaluation.get("match_score", 0)
+        recommendation = evaluation.get("recommendation", "skip")
+        explanation = evaluation.get("explanation", "")
+        
+        log.info(f"[{queue_id[:8]}] Job Match Evaluation: Score={match_score}, Rec={recommendation}")
+        await _emit_autoapply_event(
+            run_id, "log",
+            f"[AutoApplyAgent]: 📊 Fit analysis complete. Match Score: {match_score}% | Recommendation: {recommendation.upper()}",
+            user_id=user_id
+        )
+        
+        if recommendation == "skip" and match_score < threshold:
+            database.db_update_queue_status(queue_id, "skipped", failure_reason=f"Skipped: match score {match_score}% is below threshold {threshold}%. Explanation: {explanation}")
+            await _emit_autoapply_event(
+                run_id, "log",
+                f"[AutoApplyAgent]: ⚠️ Skipping application (Fit score {match_score}% < {threshold}%). Explanation: {explanation}",
+                user_id=user_id
+            )
+            try:
+                existing = database.db_get_application_by_job(user_id, entry["job_id"])
+                app_id = existing["id"] if existing else str(uuid.uuid4())
+                database.db_save_application({
+                    "id": app_id,
+                    "user_id": user_id,
+                    "job_id": entry["job_id"],
+                    "title": entry["job_title"],
+                    "company": entry["job_company"],
+                    "company_logo": entry["job_company"][0].upper() if entry["job_company"] else "?",
+                    "stage": "skipped",
+                    "location": existing.get("location", "") if existing else "",
+                    "salary": existing.get("salary", "") if existing else "",
+                    "url": job_url,
+                    "updated_at": datetime.utcnow().isoformat(),
+                })
+                await _emit_autoapply_event(
+                    run_id, "application_completed",
+                    f"[AutoApplyAgent]: Job application skipped (Score: {match_score}%)",
+                    {
+                        "status": "skipped",
+                        "job_id": entry["job_id"],
+                        "queue_id": queue_id,
+                        "job_title": entry["job_title"],
+                        "job_company": entry["job_company"],
+                        "stage": "skipped",
+                        "explanation": explanation,
+                        "match_score": match_score
+                    },
+                    user_id=user_id
+                )
+            except Exception as e:
+                log.error(f"Failed to update app to skipped stage: {e}")
+            return
 
         # ── Emit "starting" progress ──────────────────────────────────────────
         await _emit_autoapply_event(
@@ -534,6 +686,9 @@ async def process_single_autoapply_job(entry: dict) -> None:
             user=user_profile,
             resume_path=resume_path,
             on_progress=on_progress,
+            job_description=job_description,
+            resume_text=resume_raw_text,
+            debug_mode=bool(entry.get("debug_mode", False)),
         )
 
         # ── Update database with result ───────────────────────────────────────

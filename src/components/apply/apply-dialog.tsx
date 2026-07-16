@@ -8,7 +8,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { api, API_BASE_URL } from "@/lib/api";
 
 type Phase = "drafting" | "ready" | "submitting" | "done";
-type OutcomeStatus = "applied" | "simulated" | "requires_manual_intervention" | "failed" | null;
+type OutcomeStatus = "applied" | "simulated" | "requires_manual_intervention" | "failed" | "skipped" | null;
 
 export function ApplyDialog({
   job,
@@ -27,6 +27,7 @@ export function ApplyDialog({
   const [consoleLogs, setConsoleLogs] = useState<string[]>([]);
   const [outcomeStatus, setOutcomeStatus] = useState<OutcomeStatus>(null);
   const [outcomeReason, setOutcomeReason] = useState("");
+  const [debugMode, setDebugMode] = useState(false);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   const user = getCurrentUser() || {
@@ -79,7 +80,7 @@ export function ApplyDialog({
         setErrorMsg(reason || "Browser automation failed.");
         setPhase("ready");
       } else {
-        // applied, simulated, requires_manual_intervention → show done screen
+        // applied, simulated, requires_manual_intervention, skipped → show done screen
         setPhase("done");
       }
     };
@@ -163,6 +164,7 @@ export function ApplyDialog({
         job_company: job.company,
         job_url: job.url,
         job_source: job.source || "Web",
+        debug_mode: debugMode,
       };
       console.log("Sending apply payload:", payload);
       
@@ -178,6 +180,14 @@ export function ApplyDialog({
 
   // "Done" screen content based on actual outcome
   const doneContent = () => {
+    if (outcomeStatus === "skipped") {
+      return {
+        icon: <AlertTriangle className="h-6 w-6" />,
+        iconBg: "bg-yellow-500/15 text-yellow-500",
+        title: "Application Skipped",
+        body: outcomeReason || "Aria skipped this job because the match fit was below the 70% threshold.",
+      };
+    }
     if (outcomeStatus === "requires_manual_intervention") {
       return {
         icon: <AlertTriangle className="h-6 w-6" />,
@@ -300,13 +310,51 @@ export function ApplyDialog({
                       className="mt-1.5 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 transition resize-none"
                     />
                   </div>
+
+                  <div className="flex items-center justify-between p-3.5 rounded-2xl bg-muted/40 border border-border/60">
+                    <div className="space-y-0.5 max-w-[80%]">
+                      <div className="text-xs font-semibold text-foreground/90 uppercase tracking-[0.06em]">Development Mode</div>
+                      <div className="text-[11px] text-muted-foreground">Keep browser open, pause on steps, capture debug screenshots, and log detailed Playwright actions.</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDebugMode(!debugMode)}
+                      className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                        debugMode ? "bg-accent" : "bg-neutral-800"
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          debugMode ? "translate-x-5" : "translate-x-0"
+                        }`}
+                      />
+                    </button>
+                  </div>
                 </>
               )}
 
               {phase === "submitting" && (
                 <div className="py-6 space-y-4 text-center">
                   <Loader2 className="h-8 w-8 animate-spin text-accent mx-auto" />
-                  <div className="text-sm font-medium text-foreground">Launching browser automation...</div>
+                  <div className="text-sm font-medium text-foreground flex items-center justify-between">
+                    <span>Launching browser automation...</span>
+                    {debugMode && (
+                      <button
+                        onClick={async () => {
+                          if (activeRunId) {
+                            try {
+                              await api.finishDebugSession(activeRunId);
+                            } catch (e) {
+                              console.error("Failed to finish debug session", e);
+                            }
+                          }
+                        }}
+                        className="text-xs px-3 py-1.5 rounded-lg border border-red-500/50 bg-red-500/10 text-red-500 hover:bg-red-500/20 transition font-medium"
+                      >
+                        Finish Debug Session
+                      </button>
+                    )}
+                  </div>
                   <div 
                     ref={logContainerRef}
                     className="bg-black/90 text-green-400 font-mono text-xs rounded-xl p-4 h-64 overflow-y-auto space-y-1 text-left border border-border"

@@ -193,9 +193,14 @@ class PlaywrightManager:
 
 class BasePlatformAdapter:
     """Base interface representing platform-specific automation adapters."""
-    def __init__(self, page: Any, logger: ResultLogger):
+    def __init__(self, page: Any, logger: ResultLogger, debug_mode: bool = False):
         self.page = page
         self.logger = logger
+        self.debug_mode = debug_mode
+
+    async def debug_log_action(self, action_type: str, selector: str = "", extra: str = "") -> None:
+        if self.debug_mode:
+            await self.logger.log(f"⚡ [PLAYWRIGHT ACTION] Action: {action_type} | Selector: '{selector}' | URL: {self.page.url} {extra}")
 
     async def click_apply(self, task_id: str) -> bool:
         raise NotImplementedError()
@@ -208,6 +213,91 @@ class BasePlatformAdapter:
 
     async def submit_form(self, task_id: str) -> bool:
         raise NotImplementedError()
+
+
+async def _generate_ai_answer(question: str, job_description: str, resume_text: str) -> str:
+    """Generate contextual answer to a job application question using Gemini."""
+    try:
+        from config import get_settings
+        import google.generativeai as genai
+        settings = get_settings()
+        if not settings.gemini_api_key:
+            return ""
+        genai.configure(api_key=settings.gemini_api_key)
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        
+        prompt = f"""
+You are assisting a candidate in filling out a job application.
+Generate a concise, professional, and truthful answer to the following application question.
+
+CRITICAL INSTRUCTIONS:
+1. Do NOT fabricate professional experience, degrees, certifications, or skills beyond what is explicitly stated in the candidate's resume.
+2. If the answer is a yes/no, multiple choice, or numeric value, output exactly that value or select the best option.
+3. Be professional and brief (1-3 sentences maximum for text questions).
+4. Do NOT include any intro or outro text, only the direct answer.
+
+Candidate Resume:
+{resume_text}
+
+Job Description / Context:
+{job_description}
+
+Question:
+{question}
+"""
+        response = await model.generate_content_async(prompt)
+        answer = response.text.strip()
+        log.info(f"AI generated answer for '{question[:50]}...': {answer}")
+        return answer
+    except Exception as e:
+        log.warning(f"AI answer generation failed: {e}")
+        return ""
+
+
+async def _select_ai_option(question: str, options: list[str], job_description: str, resume_text: str) -> int:
+    """Choose the best index from a list of select/radio options using Gemini."""
+    try:
+        from config import get_settings
+        import google.generativeai as genai
+        import re
+        
+        settings = get_settings()
+        if not settings.gemini_api_key:
+            return 0
+        genai.configure(api_key=settings.gemini_api_key)
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        
+        options_list = "\n".join([f"{i}: {opt}" for i, opt in enumerate(options)])
+        
+        prompt = f"""
+You are assisting a candidate in filling out a job application.
+Select the index of the option that best answers the question truthfully based on the candidate's resume.
+
+Candidate Resume:
+{resume_text}
+
+Job Description / Context:
+{job_description}
+
+Question:
+{question}
+
+Options:
+{options_list}
+
+Return ONLY the selected option index as a single integer, with no other text.
+"""
+        response = await model.generate_content_async(prompt)
+        clean = response.text.strip()
+        match = re.search(r"\d+", clean)
+        if match:
+            idx = int(match.group())
+            if 0 <= idx < len(options):
+                return idx
+        return 0
+    except Exception as e:
+        log.warning(f"AI option selection failed: {e}")
+        return 0
 
 
 class GenericAdapter(BasePlatformAdapter):
@@ -233,6 +323,7 @@ class GenericAdapter(BasePlatformAdapter):
                 el = self.page.locator(selector).first
                 if await el.is_visible(timeout=2000):
                     await self.logger.log(f"Found 'Apply' button matching selector: {selector}")
+                    await self.debug_log_action("click", selector, "Apply button")
                     await _human_delay(500, 1500)
                     await el.click()
                     return True
@@ -240,89 +331,224 @@ class GenericAdapter(BasePlatformAdapter):
                 continue
         return False
 
-    async def fill_form(self, task_id: str, field_map: dict[str, str]) -> int:
+    async def fill_form(self, task_id: str, field_map: dict[str, str], job_description: str = "", resume_text: str = "") -> int:
         filled_count = 0
+        step = 0
+        max_steps = 5
+        
+        while step < max_steps:
+            await self.logger.log(f"📝 Filling form fields on step {step + 1}...")
+            step_filled = 0
+            
+            # A. Text/Textarea inputs
+            inputs = await self.page.query_selector_all(
+                "input[type='text'], input[type='email'], input[type='tel'], "
+                "input[type='url'], input[type='number'], textarea"
+            )
+            for inp in inputs:
+                try:
+                    if not await inp.is_visible() or await inp.is_disabled():
+                        continue
+                        
+                    # Check if already filled
+                    curr_val = await inp.input_value()
+                    if curr_val and len(curr_val.strip()) > 0:
+                        continue
 
-        # Fill text inputs
-        inputs = await self.page.query_selector_all(
-            "input[type='text'], input[type='email'], input[type='tel'], "
-            "input[type='url'], input[type='number'], textarea"
-        )
-        for inp in inputs:
-            try:
-                if not await inp.is_visible():
-                    continue
-
-                attrs = {}
-                for attr in ["name", "id", "placeholder", "aria-label", "autocomplete"]:
-                    val = await inp.get_attribute(attr)
-                    if val:
-                        attrs[attr] = val.lower().strip()
-
-                matched_value = None
-                for attr_val in attrs.values():
-                    for field_key, field_val in field_map.items():
-                        if field_key in attr_val or attr_val in field_key:
-                            if field_val:
-                                matched_value = field_val
-                                break
-                    if matched_value:
-                        break
-
-                # Associated Label fallback
-                if not matched_value:
+                    # Get label text
+                    label_text = ""
                     inp_id = await inp.get_attribute("id")
                     if inp_id:
-                        try:
-                            label = await self.page.query_selector(f'label[for="{inp_id}"]')
-                            if label:
-                                label_text = (await label.inner_text()).lower().strip()
-                                for field_key, field_val in field_map.items():
-                                    if field_key in label_text:
-                                        if field_val:
-                                            matched_value = field_val
-                                            break
-                        except Exception:
-                            pass
-
-                if matched_value:
-                    await inp.click()
-                    await _human_delay(200, 600)
-                    await inp.fill("")
-                    await _human_delay(100, 300)
-                    await inp.type(matched_value, delay=random.randint(30, 80))
-                    filled_count += 1
-            except Exception as e:
-                log.debug(f"Field fill error: {e}")
-                continue
-
-        # Fill dropdown selects
-        selects = await self.page.query_selector_all("select")
-        for sel in selects:
-            try:
-                if not await sel.is_visible():
-                    continue
-                options = await sel.query_selector_all("option")
-                for opt in options[1:]:
-                    val = await opt.get_attribute("value")
-                    if val and val.strip():
-                        await sel.select_option(value=val)
+                        lbl = await self.page.query_selector(f'label[for="{inp_id}"]')
+                        if lbl:
+                            label_text = await lbl.inner_text()
+                    if not label_text:
+                        placeholder = await inp.get_attribute("placeholder")
+                        if placeholder:
+                            label_text = placeholder
+                    if not label_text:
+                        aria = await inp.get_attribute("aria-label")
+                        if aria:
+                            label_text = aria
+                            
+                    label_text_lower = label_text.lower().strip()
+                    matched_value = None
+                    
+                    # 1. Check standard fields
+                    for field_key, field_val in field_map.items():
+                        if field_key in label_text_lower:
+                            matched_value = field_val
+                            break
+                            
+                    # 2. If it's a custom question and we have Gemini context
+                    if not matched_value and label_text and job_description and resume_text:
+                        matched_value = await _generate_ai_answer(label_text, job_description, resume_text)
+                        
+                    if matched_value:
+                        await self.debug_log_action("click", f"input[id='{inp_id}']", f"Focus input: Label='{label_text}'")
+                        await inp.click()
+                        await _human_delay(200, 500)
+                        await inp.fill("")
+                        await _human_delay(100, 300)
+                        await self.debug_log_action("type", f"input[id='{inp_id}']", f"Type text='{matched_value}' Label='{label_text}'")
+                        await inp.type(str(matched_value), delay=random.randint(30, 80))
+                        step_filled += 1
                         filled_count += 1
-                        break
-            except Exception:
-                continue
+                except Exception as e:
+                    log.debug(f"Error filling input: {e}")
+                    continue
 
+            # B. Select Dropdowns
+            selects = await self.page.query_selector_all("select")
+            for sel in selects:
+                try:
+                    if not await sel.is_visible() or await sel.is_disabled():
+                        continue
+                        
+                    label_text = ""
+                    sel_id = await sel.get_attribute("id")
+                    if sel_id:
+                        lbl = await self.page.query_selector(f'label[for="{sel_id}"]')
+                        if lbl:
+                            label_text = await lbl.inner_text()
+                    if not label_text:
+                        aria = await sel.get_attribute("aria-label")
+                        if aria:
+                            label_text = aria
+                            
+                    options_elements = await sel.query_selector_all("option")
+                    options = []
+                    for opt in options_elements:
+                        txt = await opt.inner_text()
+                        options.append(txt.strip() if txt else "")
+                        
+                    valid_options = [o for o in options if o and not any(x in o.lower() for x in ["select", "choose", "---"])]
+                    if not valid_options:
+                        continue
+                        
+                    if label_text and job_description and resume_text:
+                        selected_idx = await _select_ai_option(label_text, valid_options, job_description, resume_text)
+                        chosen_opt = valid_options[selected_idx]
+                        for opt in options_elements:
+                            opt_txt = await opt.inner_text()
+                            if opt_txt and chosen_opt in opt_txt:
+                                val = await opt.get_attribute("value")
+                                if val:
+                                    await self.debug_log_action("select_option", f"select[id='{sel_id}']", f"Select='{chosen_opt}' Label='{label_text}'")
+                                    await sel.select_option(value=val)
+                                    step_filled += 1
+                                    filled_count += 1
+                                    break
+                except Exception as e:
+                    log.debug(f"Error filling select: {e}")
+                    continue
+
+            # C. Checkboxes / Radio buttons
+            radios = await self.page.query_selector_all("input[type='radio']")
+            radio_groups = {}
+            for r in radios:
+                name = await r.get_attribute("name")
+                if name:
+                    if name not in radio_groups:
+                        radio_groups[name] = []
+                    radio_groups[name].append(r)
+            
+            for name, r_list in radio_groups.items():
+                try:
+                    checked = False
+                    for r in r_list:
+                        if await r.is_checked():
+                            checked = True
+                            break
+                    if checked:
+                        continue
+                        
+                    question_text = ""
+                    parent = await r_list[0].query_selector("xpath=..")
+                    if parent:
+                        question_text = await parent.inner_text()
+                        
+                    options_text = []
+                    for r in r_list:
+                        r_id = await r.get_attribute("id")
+                        lbl_text = ""
+                        if r_id:
+                            lbl = await self.page.query_selector(f'label[for="{r_id}"]')
+                            if lbl:
+                                lbl_text = await lbl.inner_text()
+                        if not lbl_text:
+                            lbl_text = await r.evaluate("el => el.nextSibling ? el.nextSibling.textContent : ''")
+                        options_text.append(lbl_text.strip() if lbl_text else f"Option {r_list.index(r)}")
+                        
+                    if question_text and options_text and job_description and resume_text:
+                        selected_idx = await _select_ai_option(question_text, options_text, job_description, resume_text)
+                        target_radio = r_list[selected_idx]
+                        if await target_radio.is_visible() and not await target_radio.is_disabled():
+                            r_id = await target_radio.get_attribute("id") or ""
+                            await self.debug_log_action("click", f"radio[id='{r_id}']", f"Select option='{options_text[selected_idx]}' for Question='{question_text}'")
+                            await target_radio.click()
+                            step_filled += 1
+                            filled_count += 1
+                except Exception as e:
+                    log.debug(f"Error filling radio group: {e}")
+                    continue
+
+            # Search for Next / Continue / Proceed buttons
+            next_selectors = [
+                'button:has-text("Next")',
+                'button:has-text("Continue")',
+                'button:has-text("Save and continue")',
+                'button:has-text("Save & continue")',
+                'button:has-text("Proceed")',
+                'input[type="button"][value*="Next" i]',
+                'input[type="button"][value*="Continue" i]',
+                'button[class*="next" i]',
+                'button[class*="continue" i]',
+                'a:has-text("Next")',
+                'a:has-text("Continue")',
+            ]
+            next_button = None
+            matched_next_sel = ""
+            for sel in next_selectors:
+                try:
+                    el = self.page.locator(sel).first
+                    if await el.is_visible(timeout=1000) and not await el.is_disabled():
+                        next_button = el
+                        matched_next_sel = sel
+                        break
+                except Exception:
+                    continue
+                    
+            if next_button:
+                await self.logger.log("➡️ Clicking 'Next' / 'Continue' to advance form step...")
+                await self.debug_log_action("click", matched_next_sel, "Next/Continue button")
+                await next_button.click()
+                await _human_delay(2000, 3500)
+                step += 1
+            else:
+                await self.logger.log("🏁 No visible 'Next' or 'Continue' button. Assuming final step reached.")
+                break
+                
         return filled_count
 
     async def upload_resume(self, task_id: str, resume_path: str) -> bool:
-        file_inputs = await self.page.query_selector_all('input[type="file"]')
-        for fi in file_inputs:
-            try:
-                await fi.set_input_files(resume_path)
-                return True
-            except Exception as e:
-                log.debug(f"File upload error: {e}")
-                continue
+        await self.logger.log("⏳ Waiting up to 20 seconds for resume upload input...")
+        start_time = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start_time < 20.0:
+            file_inputs = await self.page.query_selector_all('input[type="file"]')
+            for fi in file_inputs:
+                try:
+                    if await fi.is_visible():
+                        fi_id = await fi.get_attribute("id") or ""
+                        await self.debug_log_action("upload", f"input[id='{fi_id}']", f"Resume path: {resume_path}")
+                        await fi.set_input_files(resume_path)
+                        await self.logger.log("✅ Resume file attached to file input field.")
+                        return True
+                except Exception as e:
+                    log.debug(f"File upload error: {e}")
+                    continue
+            await asyncio.sleep(1.0)
+        await self.logger.log("⚠️ Resume upload field not found or not visible after 20 seconds.")
         return False
 
     async def submit_form(self, task_id: str) -> bool:
@@ -339,6 +565,7 @@ class GenericAdapter(BasePlatformAdapter):
             try:
                 el = self.page.locator(selector).first
                 if await el.is_visible(timeout=2000):
+                    await self.debug_log_action("click", selector, "Submit Form Button")
                     await _human_delay(1000, 2500)
                     await el.click()
                     return True
@@ -354,6 +581,7 @@ class NaukriAdapter(GenericAdapter):
             '.apply-button',
             'button:has-text("Apply")',
             'button.apply-button',
+            'button:has-text("Apply on Company Site")',
         ]
         for selector in naukri_selectors:
             try:
@@ -373,6 +601,7 @@ class GlassdoorAdapter(GenericAdapter):
         glassdoor_selectors = [
             'button:has-text("Easy Apply")',
             'button[data-test="easy-apply-button"]',
+            'button:has-text("Apply Now")',
         ]
         for selector in glassdoor_selectors:
             try:
@@ -387,41 +616,87 @@ class GlassdoorAdapter(GenericAdapter):
 
 
 class LinkedInAdapter(GenericAdapter):
-    """LinkedIn-specific automation adapter placeholder."""
+    """LinkedIn-specific automation adapter."""
     async def click_apply(self, task_id: str) -> bool:
+        linkedin_selectors = [
+            'button.jobs-apply-button',
+            'button:has-text("Easy Apply")',
+            '.jobs-s-apply button',
+            'button:has-text("Apply")',
+        ]
+        for selector in linkedin_selectors:
+            try:
+                el = self.page.locator(selector).first
+                if await el.is_visible(timeout=2000):
+                    await self.logger.log(f"[LinkedIn] Clicking Easy Apply via selector: {selector}")
+                    await el.click()
+                    return True
+            except Exception:
+                continue
         return await super().click_apply(task_id)
 
 
 class IndeedAdapter(GenericAdapter):
-    """Indeed-specific automation adapter placeholder."""
+    """Indeed-specific automation adapter."""
     async def click_apply(self, task_id: str) -> bool:
+        indeed_selectors = [
+            'button.indeed-apply-button',
+            '#indeedApplyButton',
+            'a.indeed-apply-button',
+            'button:has-text("Apply Now")',
+            'button:has-text("Apply")',
+        ]
+        for selector in indeed_selectors:
+            try:
+                el = self.page.locator(selector).first
+                if await el.is_visible(timeout=2000):
+                    await self.logger.log(f"[Indeed] Clicking Apply via selector: {selector}")
+                    await el.click()
+                    return True
+            except Exception:
+                continue
         return await super().click_apply(task_id)
 
 
 class WellfoundAdapter(GenericAdapter):
-    """Wellfound-specific automation adapter placeholder."""
+    """Wellfound-specific automation adapter."""
     async def click_apply(self, task_id: str) -> bool:
+        wellfound_selectors = [
+            'button:has-text("Apply")',
+            '.styles_applyButton__',
+            'button:has-text("Quick Apply")',
+            'button:has-text("Apply Now")',
+        ]
+        for selector in wellfound_selectors:
+            try:
+                el = self.page.locator(selector).first
+                if await el.is_visible(timeout=2000):
+                    await self.logger.log(f"[Wellfound] Clicking Apply via selector: {selector}")
+                    await el.click()
+                    return True
+            except Exception:
+                continue
         return await super().click_apply(task_id)
 
 
 class PlatformAdapterFactory:
     """Selects the correct adapter based on the job URL domain."""
     @staticmethod
-    def get_adapter(url: str, page: Any, logger: ResultLogger) -> BasePlatformAdapter:
+    def get_adapter(url: str, page: Any, logger: ResultLogger, debug_mode: bool = False) -> BasePlatformAdapter:
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
         if "naukri.com" in domain:
-            return NaukriAdapter(page, logger)
+            return NaukriAdapter(page, logger, debug_mode)
         elif "glassdoor.com" in domain or "glassdoor.co.in" in domain:
-            return GlassdoorAdapter(page, logger)
+            return GlassdoorAdapter(page, logger, debug_mode)
         elif "linkedin.com" in domain:
-            return LinkedInAdapter(page, logger)
+            return LinkedInAdapter(page, logger, debug_mode)
         elif "indeed.com" in domain:
-            return IndeedAdapter(page, logger)
+            return IndeedAdapter(page, logger, debug_mode)
         elif "wellfound.com" in domain:
-            return WellfoundAdapter(page, logger)
+            return WellfoundAdapter(page, logger, debug_mode)
         else:
-            return GenericAdapter(page, logger)
+            return GenericAdapter(page, logger, debug_mode)
 
 
 class AutoApplyEngine:
@@ -473,6 +748,38 @@ class AutoApplyEngine:
             log.warning(f"Screenshot failed: {e}")
             path = ""
         return path
+
+    async def _wait_for_page_render(self, page: Any, logger: ResultLogger, timeout: float = 15.0) -> None:
+        """
+        Waits for the page to finish rendering dynamic JavaScript content.
+        Checks if visible buttons or links are present, indicating the page loader has finished.
+        """
+        await logger.log("⏳ Waiting for page elements to render...")
+        start_time = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start_time < timeout:
+            try:
+                # Check if there is any visible text or if loader spinner is gone
+                buttons = await page.query_selector_all("button")
+                anchors = await page.query_selector_all("a")
+                
+                has_visible_content = False
+                for b in buttons:
+                    if (await b.inner_text() or "").strip():
+                        has_visible_content = True
+                        break
+                if not has_visible_content:
+                    for a in anchors:
+                        if (await a.inner_text() or "").strip():
+                            has_visible_content = True
+                            break
+                
+                if has_visible_content:
+                    await logger.log("✨ Page content rendering detected.")
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
+        await logger.log("⚠️ Page render wait timed out. Content might be slow or blocked.")
 
     async def _perform_diagnostics(self, page: Any, logger: ResultLogger) -> None:
         """
@@ -565,6 +872,250 @@ class AutoApplyEngine:
         except Exception as e:
             return f"Failed to analyze page structure: {e}"
 
+    async def _inject_or_update_debug_overlay(self, page: Any, step_name: str) -> None:
+        """Injects or updates a floating debug controller overlay in the automated browser."""
+        try:
+            if page.is_closed():
+                return
+
+            friendly_names = {
+                "browser_launch": "1. Browser Launched",
+                "job_page_opened": "2. Job Page Loaded",
+                "apply_button_detection": "3. Apply Button Triggered",
+                "resume_upload": "4. Resume Uploaded",
+                "form_completion": "5. Form Populated",
+                "review_page": "6. Form Review",
+                "submit": "7. Application Submitted",
+                "failure": "❌ Process Failed/Paused",
+            }
+            display_step = friendly_names.get(step_name, step_name.replace("_", " ").title())
+
+            script = f"""
+            (() => {{
+                let overlay = document.getElementById('stellar-debug-overlay');
+                if (!overlay) {{
+                    overlay = document.createElement('div');
+                    overlay.id = 'stellar-debug-overlay';
+                    overlay.style.position = 'fixed';
+                    overlay.style.bottom = '20px';
+                    overlay.style.right = '20px';
+                    overlay.style.zIndex = '9999999';
+                    overlay.style.background = 'rgba(15, 23, 42, 0.95)';
+                    overlay.style.color = '#f8fafc';
+                    overlay.style.padding = '20px';
+                    overlay.style.borderRadius = '16px';
+                    overlay.style.boxShadow = '0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.2)';
+                    overlay.style.border = '1px solid rgba(99, 102, 241, 0.3)';
+                    overlay.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+                    overlay.style.width = '300px';
+                    overlay.style.backdropFilter = 'blur(12px)';
+                    overlay.style.transition = 'all 0.3s ease';
+                    overlay.style.userSelect = 'none';
+
+                    // Dragging support
+                    let isDragging = false;
+                    let offsetX, offsetY;
+                    overlay.addEventListener('mousedown', (e) => {{
+                        if (e.target.tagName === 'BUTTON') return;
+                        isDragging = true;
+                        offsetX = e.clientX - overlay.getBoundingClientRect().left;
+                        offsetY = e.clientY - overlay.getBoundingClientRect().top;
+                    }});
+                    document.addEventListener('mousemove', (e) => {{
+                        if (!isDragging) return;
+                        overlay.style.bottom = 'auto';
+                        overlay.style.right = 'auto';
+                        overlay.style.left = (e.clientX - offsetX) + 'px';
+                        overlay.style.top = (e.clientY - offsetY) + 'px';
+                    }});
+                    document.addEventListener('mouseup', () => isDragging = false);
+
+                    document.body.appendChild(overlay);
+                }}
+
+                overlay.innerHTML = `
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:8px;">
+                        <span style="font-weight:700; color:#818cf8; font-size:14px; letter-spacing:0.5px;">STELLAR DEBUG MODE</span>
+                        <div style="width:8px; height:8px; border-radius:50%; background:#10b981; box-shadow:0 0 8px #10b981;"></div>
+                    </div>
+                    <div style="margin-bottom:16px;">
+                        <div style="font-size:11px; color:#94a3b8; text-transform:uppercase; font-weight:600; margin-bottom:2px;">Current Step</div>
+                        <div style="font-size:16px; font-weight:600; color:#f1f5f9;">{display_step}</div>
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:8px;">
+                        <button id="stellar-debug-continue-btn" style="width:100%; padding:10px; border-radius:8px; border:none; background:#4f46e5; color:#fff; font-weight:600; cursor:pointer; font-size:13px; transition:background 0.2s;">
+                            Continue to Next Step &rarr;
+                        </button>
+                        <button id="stellar-debug-finish-btn" style="width:100%; padding:10px; border-radius:8px; border:1px solid rgba(239,68,68,0.5); background:rgba(239,68,68,0.1); color:#ef4444; font-weight:600; cursor:pointer; font-size:13px; transition:all 0.2s;">
+                            Finish Debug Session
+                        </button>
+                    </div>
+                    <div style="margin-top:12px; font-size:10px; color:#64748b; text-align:center;">
+                        You can also control this session from the Stellar UI
+                    </div>
+                `;
+
+                // Add Hover Effects
+                const cBtn = document.getElementById('stellar-debug-continue-btn');
+                const fBtn = document.getElementById('stellar-debug-finish-btn');
+                if (cBtn) {{
+                    cBtn.onmouseenter = () => cBtn.style.background = '#4338ca';
+                    cBtn.onmouseleave = () => cBtn.style.background = '#4f46e5';
+                    cBtn.onclick = () => {{
+                        window.stellarDebugAction = 'continue';
+                        cBtn.disabled = true;
+                        cBtn.innerText = 'Processing...';
+                    }};
+                }}
+                if (fBtn) {{
+                    fBtn.onmouseenter = () => {{
+                        fBtn.style.background = '#ef4444';
+                        fBtn.style.color = '#fff';
+                    }};
+                    fBtn.onmouseleave = () => {{
+                        fBtn.style.background = 'rgba(239,68,68,0.1)';
+                        fBtn.style.color = '#ef4444';
+                    }};
+                    fBtn.onclick = () => {{
+                        window.stellarDebugAction = 'finish';
+                        fBtn.disabled = true;
+                    }};
+                }}
+            }})();
+            """
+            await page.evaluate(script)
+        except Exception as overlay_err:
+            log.warning(f"Failed to inject debug overlay: {overlay_err}")
+
+    async def _pause_and_screenshot(
+        self,
+        step_name: str,
+        page: Any,
+        logger: ResultLogger,
+        task_id: str,
+        debug_mode: bool
+    ) -> None:
+        if not debug_mode:
+            return
+
+        # Take screenshot with timestamp
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filename = f"debug_{step_name}_{ts}_{task_id[:8]}.png"
+        path = os.path.join(self.screenshots_dir, filename)
+        try:
+            await page.screenshot(path=path, full_page=True)
+            await logger.log(f"📸 [DEBUG] Screenshot captured: {filename} (Step: {step_name})")
+        except Exception as e:
+            await logger.log(f"⚠️ [DEBUG] Screenshot failed: {e}")
+
+        # Inject/update overlay
+        await self._inject_or_update_debug_overlay(page, step_name)
+
+        await logger.log(f"⏸️ [DEBUG PAUSE] Current Step: '{step_name}'. Waiting for your action in the browser...")
+        
+        while True:
+            # Check if page is closed/destroyed
+            try:
+                if page.is_closed():
+                    await logger.log("🚪 [DEBUG] Browser tab was closed by user. Terminating debug session.")
+                    break
+            except Exception:
+                await logger.log("🚪 [DEBUG] Browser was closed. Terminating debug session.")
+                break
+
+            # Check if finished from store
+            import store
+            if store.is_debug_session_finished(task_id):
+                await logger.log("⏹️ [DEBUG] Session marked as completed/finished via UI.")
+                break
+
+            # Evaluate control action in browser page context
+            try:
+                action = await page.evaluate("window.stellarDebugAction")
+                if action == "continue":
+                    await page.evaluate("window.stellarDebugAction = null")
+                    await logger.log(f"▶️ [DEBUG] Advancing past step: '{step_name}'")
+                    break
+                elif action == "finish":
+                    await logger.log("⏹️ [DEBUG] Session terminated via overlay button.")
+                    store.finish_debug_session(task_id)
+                    break
+            except Exception:
+                # E.g. during page loads, the script environment might not be ready
+                pass
+
+            await asyncio.sleep(0.5)
+
+    async def evaluate_job_match(
+        self,
+        user: UserProfile,
+        job_title: str,
+        job_company: str,
+        job_url: str,
+        resume_text: str,
+        threshold: int = 70
+    ) -> dict[str, Any]:
+        """Evaluates the match relevance between candidate's resume and target job details using Gemini."""
+        try:
+            from config import get_settings
+            import google.generativeai as genai
+            import json
+            import re
+            
+            settings = get_settings()
+            if not settings.gemini_api_key:
+                # Default match if no API key is set
+                return {
+                    "match_score": 85,
+                    "explanation": "Simulated match evaluation (no Gemini API Key configured)",
+                    "recommendation": "apply"
+                }
+                
+            genai.configure(api_key=settings.gemini_api_key)
+            model = genai.GenerativeModel("gemini-2.5-flash")
+            
+            prompt = f"""
+You are an expert AI recruiting and job matching agent.
+Evaluate the candidate's resume against the target job details. Determine:
+1. Match Score (an integer from 0 to 100).
+2. Explanation of the score.
+3. Recommendation ("apply" if the Match Score is {threshold} or higher, otherwise "skip").
+
+Candidate Details:
+- Name: {user.name}
+- Target Title: {user.summary}
+- Skills: {', '.join(user.skills)}
+
+Candidate Resume Text:
+{resume_text}
+
+Target Job Details:
+- Title: {job_title}
+- Company: {job_company}
+- URL: {job_url}
+
+Provide the response in raw JSON format with exactly three keys: "match_score", "explanation", and "recommendation".
+Do not include any markdown wrappers or surrounding text.
+"""
+            response = await model.generate_content_async(prompt)
+            clean_res = response.text.strip()
+            clean_res = re.sub(r"^```json\s*", "", clean_res, flags=re.MULTILINE)
+            clean_res = re.sub(r"\s*```$", "", clean_res, flags=re.MULTILINE)
+            
+            res_dict = json.loads(clean_res)
+            return {
+                "match_score": int(res_dict.get("match_score", 0)),
+                "explanation": str(res_dict.get("explanation", "")),
+                "recommendation": str(res_dict.get("recommendation", "skip")).strip().lower()
+            }
+        except Exception as e:
+            log.error(f"Job match evaluation failed: {e}", exc_info=True)
+            return {
+                "match_score": 0,
+                "explanation": f"Evaluation error: {str(e)}",
+                "recommendation": "skip"
+            }
+
     async def run(
         self,
         task_id: str,
@@ -574,6 +1125,9 @@ class AutoApplyEngine:
         user: UserProfile,
         resume_path: str = "",
         on_progress: Optional[Callable] = None,
+        job_description: str = "",
+        resume_text: str = "",
+        debug_mode: bool = False,
     ) -> dict[str, Any]:
         logger = ResultLogger(task_id, on_progress)
 
@@ -604,12 +1158,18 @@ class AutoApplyEngine:
         context = None
         page = None
 
-        try:
+        async def run_internal():
+            nonlocal browser, context, page
             headless_env = os.getenv("AUTOAPPLY_HEADLESS", "false").lower()
             headless_val = headless_env in ("true", "1", "yes")
+            if debug_mode:
+                headless_val = False  # Debug mode must run headful
             slow_mo_val = int(os.getenv("AUTOAPPLY_SLOW_MO", "1200"))
 
             browser, context, page = await manager.init_browser(headless=headless_val, slow_mo=slow_mo_val)
+
+            # Step 1: Browser Launch Pause
+            await self._pause_and_screenshot("browser_launch", page, logger, task_id, debug_mode)
 
             # Cookie injection
             try:
@@ -620,23 +1180,30 @@ class AutoApplyEngine:
             # Navigation
             await logger.log(f"🔍 Navigating to: {job_url[:80]}...")
             try:
-                response = await page.goto(job_url, wait_until="domcontentloaded", timeout=45000)
+                response = await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
                 await logger.log("✅ Navigation completed.")
                 
                 # REQUIREMENT 1: Log the current page URL for every job.
                 current_url = page.url
                 await logger.log(f"🔗 Current page URL: {current_url}")
                 
+                # Wait for dynamic JS content rendering!
+                await self._wait_for_page_render(page, logger)
+                
                 await _human_delay(2000, 4000)
             except Exception as nav_err:
                 error_detail = f"Navigation failed: {type(nav_err).__name__}: {str(nav_err)}"
                 await logger.log(f"❌ {error_detail}")
                 screenshot = await self._take_screenshot(page, task_id)
+                await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
                 return {
                     "status": "failed",
                     "reason": error_detail,
                     "screenshot": screenshot,
                 }
+
+            # Step 2: Job Page Opened Pause
+            await self._pause_and_screenshot("job_page_opened", page, logger, task_id, debug_mode)
 
             # Redirect ATS detection
             current_url = page.url
@@ -645,6 +1212,7 @@ class AutoApplyEngine:
             if ats_platform:
                 await logger.log(f"⚠️ Redirected to external ATS: {ats_platform}")
                 screenshot = await self._take_screenshot(page, task_id)
+                await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
                 return {
                     "status": "requires_manual_intervention",
                     "reason": f"Redirected to external ATS platform: {ats_platform}",
@@ -667,9 +1235,11 @@ class AutoApplyEngine:
                     return {"status": "requires_manual_intervention", "reason": "Job listing closed", "screenshot": screenshot}
                 elif state == "blocked_captcha":
                     await logger.log("⚠️ Security Block: CAPTCHA / human verification challenge detected.")
+                    await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
                     return {"status": "requires_manual_intervention", "reason": "CAPTCHA challenge detected", "screenshot": screenshot}
                 elif state == "blocked_otp":
                     await logger.log("⚠️ Security Block: OTP verification code requested.")
+                    await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
                     return {"status": "requires_manual_intervention", "reason": "OTP requested", "screenshot": screenshot}
 
             # REQUIREMENT 11: Verify that the browser is actually opening the job details page
@@ -679,7 +1249,6 @@ class AutoApplyEngine:
             
             is_search_page = False
             if "search" in current_url_lower or "jobs/search" in current_url_lower or "jobs/browse" in current_url_lower or "job-search" in current_url_lower:
-                # If there's a job ID parameter or if the path contains 'job-listings' or 'jobs/view', it is a details page!
                 has_job_id_param = any(param in current_url_lower for param in ["jobid", "job_id", "currentjobid"])
                 has_listing_path = any(path in current_url_lower for path in ["job-listings", "jobs/view", "/jobs/"])
                 if not (has_job_id_param or has_listing_path):
@@ -689,6 +1258,7 @@ class AutoApplyEngine:
                 auth_reason = "Verification Failed: Browser is on an authentication/login page instead of job details page."
                 await logger.log(f"❌ {auth_reason}")
                 screenshot = await self._take_screenshot(page, task_id)
+                await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
                 return {
                     "status": "requires_manual_intervention",
                     "reason": auth_reason,
@@ -698,6 +1268,7 @@ class AutoApplyEngine:
                 search_reason = "Verification Failed: Browser is on a job search list page instead of specific job details page."
                 await logger.log(f"❌ {search_reason}")
                 screenshot = await self._take_screenshot(page, task_id)
+                await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
                 return {
                     "status": "requires_manual_intervention",
                     "reason": search_reason,
@@ -705,9 +1276,8 @@ class AutoApplyEngine:
                 }
 
             # Get Adapter
-            adapter = PlatformAdapterFactory.get_adapter(current_url, page, logger)
+            adapter = PlatformAdapterFactory.get_adapter(current_url, page, logger, debug_mode)
             
-            # REQUIREMENT 2: Log the detected platform (LinkedIn, Naukri, Indeed, Glassdoor, Wellfound, Generic).
             platform_name = adapter.__class__.__name__.replace("Adapter", "")
             await logger.log(f"🎯 Detected platform: {platform_name}")
 
@@ -721,8 +1291,6 @@ class AutoApplyEngine:
             # Click Apply
             await logger.log("📋 Scanning page for Apply trigger buttons...")
             
-            # REQUIREMENT 8: Do not spend more than 10 seconds searching for an Apply button.
-            # REQUIREMENT 9: If no Apply button is found after 10 seconds, capture screenshot, log HTML, and continue immediately.
             apply_clicked = False
             try:
                 apply_clicked = await asyncio.wait_for(
@@ -737,25 +1305,49 @@ class AutoApplyEngine:
                 apply_clicked = False
 
             if not apply_clicked:
-                # REQUIREMENT 7: Explain WHY instead of only saying "No Apply button detected."
                 why_reason = await self._explain_missing_button_reason(page, logger)
                 await logger.log(f"⚠️ Apply button detection failed: {why_reason}")
                 
-                # REQUIREMENT 9: Capture screenshot
+                # Highlight and print every button for manual inspection
+                if debug_mode:
+                    await logger.log("🔍 [DEBUG] Highlighting all buttons on page for inspection...")
+                    try:
+                        buttons = await page.query_selector_all("button, a, [role='button'], input[type='button'], input[type='submit']")
+                        button_details = []
+                        for idx, btn in enumerate(buttons):
+                            try:
+                                text = (await btn.inner_text() or "").strip().replace("\n", " ")
+                                tag = await btn.evaluate("el => el.tagName")
+                                cls = await btn.get_attribute("class") or ""
+                                if text:
+                                    button_details.append(f"Button {idx+1}: <{tag}> Text: '{text}' | Class: '{cls}'")
+                                    await btn.evaluate("el => el.style.border = '3px dashed red'")
+                                    await btn.evaluate("el => el.style.backgroundColor = 'yellow'")
+                                    await btn.evaluate("el => el.style.color = 'black'")
+                            except Exception:
+                                pass
+                        if button_details:
+                            await logger.log("📋 Page Buttons Text Content:\n" + "\n".join(button_details))
+                    except Exception as highlight_err:
+                        await logger.log(f"⚠️ Failed to highlight buttons: {highlight_err}")
+
                 screenshot = await self._take_screenshot(page, task_id)
                 
-                # REQUIREMENT 9: Log page HTML
                 try:
                     html_content = await page.content()
                     await logger.log(f"📄 Page HTML (first 3000 chars):\n{html_content[:3000]}...")
                 except Exception as html_err:
                     await logger.log(f"⚠️ Could not dump page HTML: {html_err}")
 
+                await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
                 return {
                     "status": "requires_manual_intervention",
                     "reason": why_reason,
                     "screenshot": screenshot,
                 }
+
+            # Step 3: Apply Button Detection Pause
+            await self._pause_and_screenshot("apply_button_detection", page, logger, task_id, debug_mode)
 
             await _human_delay(2000, 4000)
 
@@ -765,6 +1357,7 @@ class AutoApplyEngine:
             if ats_platform:
                 await logger.log(f"⚠️ Apply click redirected to external ATS: {ats_platform}")
                 screenshot = await self._take_screenshot(page, task_id)
+                await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
                 return {
                     "status": "requires_manual_intervention",
                     "reason": f"Apply button redirected to external ATS: {ats_platform}",
@@ -775,8 +1368,11 @@ class AutoApplyEngine:
             # Fill form fields
             await logger.log("✍️ Populating form fields from candidate profile...")
             field_map = self._build_field_map(user)
-            fields_filled = await adapter.fill_form(task_id, field_map)
+            fields_filled = await adapter.fill_form(task_id, field_map, job_description=job_description, resume_text=resume_text)
             await logger.log(f"✅ Filled {fields_filled} form fields")
+
+            # Step 5: Form Completion Pause
+            await self._pause_and_screenshot("form_completion", page, logger, task_id, debug_mode)
 
             # Upload resume
             if resume_path and os.path.isfile(resume_path):
@@ -787,11 +1383,17 @@ class AutoApplyEngine:
                 else:
                     await logger.log("⚠️ Resume upload input not found or failed")
 
+                # Step 4: Resume Upload Pause
+                await self._pause_and_screenshot("resume_upload", page, logger, task_id, debug_mode)
+
             await _human_delay(1500, 3000)
 
             # Take pre-submit screenshot
             screenshot = await self._take_screenshot(page, task_id)
             await logger.log("📸 Pre-submit audit screenshot captured.")
+
+            # Step 6: Review Page Pause (right before submit click)
+            await self._pause_and_screenshot("review_page", page, logger, task_id, debug_mode)
 
             # Submit form
             submitted = False
@@ -810,7 +1412,6 @@ class AutoApplyEngine:
                     db_update_queue_status(task_id, "PENDING_SUBMIT")
                 except Exception:
                     pass
-                # Await manual submission
                 for _ in range(120):
                     if page.is_closed():
                         submitted = True
@@ -818,6 +1419,9 @@ class AutoApplyEngine:
                     await asyncio.sleep(1)
 
             if submitted:
+                # Step 7: Submit Click Pause
+                await self._pause_and_screenshot("submit", page, logger, task_id, debug_mode)
+
                 await _human_delay(2000, 4000)
                 final_screenshot = await self._take_screenshot(page, task_id)
                 await logger.log(f"✅ Application successfully submitted automatically!")
@@ -829,6 +1433,7 @@ class AutoApplyEngine:
                 }
             else:
                 await logger.log("⚠️ Form filled but submit confirmation could not be verified")
+                await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
                 return {
                     "status": "requires_manual_intervention",
                     "reason": "Form populated but submit confirmation could not be verified",
@@ -836,6 +1441,26 @@ class AutoApplyEngine:
                     "screenshot": screenshot,
                 }
 
+        try:
+            timeout_val = 3600.0 if debug_mode else 90.0
+            return await asyncio.wait_for(run_internal(), timeout=timeout_val)
+        except asyncio.TimeoutError:
+            timeout_msg = "⏱️ Timeout: Job application process exceeded maximum duration."
+            await logger.log(f"❌ {timeout_msg}")
+            screenshot_path = ""
+            if page:
+                try:
+                    screenshot_path = await self._take_screenshot(page, task_id)
+                    html_content = await page.content()
+                    await logger.log(f"📄 Page HTML (first 3000 chars on timeout):\n{html_content[:3000]}...")
+                except Exception as clean_err:
+                    log.warning(f"Failed to capture state on timeout: {clean_err}")
+            await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
+            return {
+                "status": "failed",
+                "reason": timeout_msg,
+                "screenshot": screenshot_path,
+            }
         except Exception as e:
             import traceback
             tb_str = traceback.format_exc()
@@ -849,13 +1474,32 @@ class AutoApplyEngine:
                     screenshot = await self._take_screenshot(page, task_id)
                 except Exception:
                     pass
+            await self._pause_and_screenshot("failure", page, logger, task_id, debug_mode)
             return {
                 "status": "failed",
                 "reason": error_detail,
                 "screenshot": screenshot,
             }
         finally:
-            await manager.cleanup()
+            if not debug_mode:
+                await manager.cleanup()
+            else:
+                await logger.log("ℹ️ [DEBUG] Browser left open for manual inspection.")
+                while True:
+                    try:
+                        if page is None or page.is_closed():
+                            break
+                    except Exception:
+                        break
+                    
+                    import store
+                    if store.is_debug_session_finished(task_id):
+                        break
+                        
+                    await asyncio.sleep(1.0)
+                
+                await logger.log("🧹 [DEBUG] Cleaning up debug browser instance...")
+                await manager.cleanup()
 
     def _build_field_map(self, user: UserProfile) -> dict[str, str]:
         exp_str = ""
@@ -992,6 +1636,24 @@ class AutoApplyAgent:
     def __init__(self):
         self.engine = AutoApplyEngine()
 
+    async def evaluate_job_match(
+        self,
+        user: UserProfile,
+        job_title: str,
+        job_company: str,
+        job_url: str,
+        resume_text: str,
+        threshold: int = 70
+    ) -> dict[str, Any]:
+        return await self.engine.evaluate_job_match(
+            user=user,
+            job_title=job_title,
+            job_company=job_company,
+            job_url=job_url,
+            resume_text=resume_text,
+            threshold=threshold
+        )
+
     async def apply_to_job(
         self,
         task_id: str,
@@ -1001,6 +1663,9 @@ class AutoApplyAgent:
         user: UserProfile,
         resume_path: str = "",
         on_progress: Optional[Callable] = None,
+        job_description: str = "",
+        resume_text: str = "",
+        debug_mode: bool = False,
     ) -> dict[str, Any]:
         return await self.engine.run(
             task_id=task_id,
@@ -1010,4 +1675,7 @@ class AutoApplyAgent:
             user=user,
             resume_path=resume_path,
             on_progress=on_progress,
+            job_description=job_description,
+            resume_text=resume_text,
+            debug_mode=debug_mode,
         )

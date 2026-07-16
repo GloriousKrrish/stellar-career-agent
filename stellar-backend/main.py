@@ -329,6 +329,182 @@ async def get_resume_profile(run_id: str):
     return state.user_profile.model_dump(mode="json")
 
 
+# ─── Multiple Resumes Routes ──────────────────────────────────────────────────
+
+class RenameResumeRequest(BaseModel):
+    filename: str
+
+@app.get("/api/resumes", tags=["Resume"])
+async def list_resumes(current_user: dict[str, Any] = Depends(get_current_user)):
+    """List all uploaded resumes for the current user."""
+    import db
+    resumes = db.db_get_resumes_by_user(current_user["id"])
+    return {"resumes": resumes}
+
+@app.post("/api/resumes/upload", tags=["Resume"])
+async def upload_multiple_resumes(
+    file: UploadFile = File(...),
+    current_user: dict[str, Any] = Depends(get_current_user)
+):
+    """Upload and parse a resume, saving it to the user's list of resumes."""
+    import db
+    allowed = {".pdf", ".docx", ".doc", ".txt"}
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in allowed:
+        raise HTTPException(status_code=400, detail=f"File type '{ext}' not supported. Use PDF, DOCX, or TXT.")
+
+    resume_id = str(uuid.uuid4())
+    save_path = os.path.join(settings.upload_dir, f"{resume_id}{ext}")
+
+    content = await file.read()
+    if len(content) > settings.max_file_size_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"File too large. Max {settings.max_file_size_mb}MB.")
+
+    async with aiofiles.open(save_path, "wb") as f:
+        await f.write(content)
+
+    log.info(f"Resume uploaded: {file.filename} → {save_path} ({len(content):,} bytes)")
+
+    # Parse resume
+    try:
+        agent = ResumeIntelligenceAgent()
+        profile = await agent.parse(content, file.filename or "resume.pdf")
+    except Exception as e:
+        log.error(f"Resume parsing failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Resume parsing failed: {str(e)}")
+
+    # Check if this is the first resume (make it default)
+    existing = db.db_get_resumes_by_user(current_user["id"])
+    is_default = len(existing) == 0
+
+    resume_data = {
+        "id": resume_id,
+        "user_id": current_user["id"],
+        "filename": file.filename or "resume.pdf",
+        "filepath": save_path,
+        "is_default": is_default,
+        "raw_text": profile.raw_text,
+        "skills": profile.skills,
+        "created_at": datetime.utcnow().isoformat()
+    }
+    db.db_save_resume(resume_data)
+
+    # If it is default, also update the main user profile
+    if is_default:
+        try:
+            import auth
+            auth.update_user_profile(current_user["email"], {
+                "title": profile.skills[0] if profile.skills else "",
+                "location": profile.location,
+                "skills": profile.skills,
+                "keywords": profile.keywords,
+                "resume_score": profile.resume_score,
+                "ats_score": profile.ats_score,
+                "missing_skills": profile.missing_skills,
+                "improvements": profile.improvements,
+                "run_id": resume_id,
+                "raw_text": profile.raw_text,
+            })
+        except Exception as e:
+            log.error(f"Failed to update user profile default: {e}", exc_info=True)
+
+    db.db_save_agent_log(
+        user_id=current_user["id"],
+        agent="resume",
+        text=f"Uploaded new resume: {file.filename}",
+        kind="info"
+    )
+
+    return {
+        "status": "success",
+        "resume": {
+            "id": resume_id,
+            "filename": file.filename,
+            "is_default": is_default,
+            "skills": profile.skills,
+            "resume_score": profile.resume_score,
+            "ats_score": profile.ats_score
+        }
+    }
+
+@app.delete("/api/resumes/{resume_id}", tags=["Resume"])
+async def delete_resume(
+    resume_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user)
+):
+    """Delete a resume."""
+    import db
+    resume = db.db_get_resume(resume_id)
+    if not resume or resume["user_id"] != current_user["id"]:
+        raise HTTPException(status_code=404, detail="Resume not found")
+
+    db.db_delete_resume(resume_id)
+
+    # Clean up file from disk
+    try:
+        if os.path.exists(resume["filepath"]):
+            os.remove(resume["filepath"])
+    except Exception as e:
+        log.warning(f"Failed to delete resume file from disk: {e}")
+
+    # If the deleted resume was default, set another default if available
+    if resume["is_default"]:
+        remaining = db.db_get_resumes_by_user(current_user["id"])
+        if remaining:
+            db.db_set_default_resume(current_user["id"], remaining[0]["id"])
+
+    return {"status": "success", "message": "Resume deleted"}
+
+@app.post("/api/resumes/{resume_id}/set-default", tags=["Resume"])
+async def set_default_resume(
+    resume_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user)
+):
+    """Mark a resume as default and sync profile details to the main user profile."""
+    import db
+    resume = db.db_get_resume(resume_id)
+    if not resume or resume["user_id"] != current_user["id"]:
+        raise HTTPException(status_code=404, detail="Resume not found")
+
+    db.db_set_default_resume(current_user["id"], resume_id)
+
+    # Sync default resume data to user profile
+    try:
+        import auth
+        skills = resume["skills"]
+        auth.update_user_profile(current_user["email"], {
+            "title": skills[0] if skills else "",
+            "skills": skills,
+            "run_id": resume_id,
+            "raw_text": resume["raw_text"],
+        })
+    except Exception as e:
+        log.error(f"Failed to sync default resume profile: {e}", exc_info=True)
+
+    return {"status": "success", "message": "Default resume updated"}
+
+@app.put("/api/resumes/{resume_id}/rename", tags=["Resume"])
+async def rename_resume(
+    resume_id: str,
+    req: RenameResumeRequest,
+    current_user: dict[str, Any] = Depends(get_current_user)
+):
+    """Rename a resume's display filename."""
+    import db
+    resume = db.db_get_resume(resume_id)
+    if not resume or resume["user_id"] != current_user["id"]:
+        raise HTTPException(status_code=404, detail="Resume not found")
+
+    # Add correct extension if missing in new name
+    orig_ext = os.path.splitext(resume["filename"])[1]
+    new_name = req.filename.strip()
+    if not new_name.lower().endswith(orig_ext.lower()):
+        new_name += orig_ext
+
+    db.db_rename_resume(resume_id, new_name)
+    return {"status": "success", "message": "Resume renamed successfully"}
+
+
 # ─── Workflow ─────────────────────────────────────────────────────────────────
 
 @app.post("/api/workflow/start", tags=["Workflow"])
@@ -1132,6 +1308,7 @@ class ManualEnqueueRequest(BaseModel):
     job_company: str
     job_url: str
     job_source: str = ""
+    debug_mode: Optional[bool] = False
 
 
 @app.post("/api/autoapply/enqueue", tags=["AutoApply"])
@@ -1140,7 +1317,7 @@ async def manual_enqueue_job(
     current_user: dict[str, Any] = Depends(get_current_user),
 ):
     """Manually enqueue a specific job for auto-application via the Python orchestrator."""
-    print(f"[AUTO-APPLY TRIGGER] Received manual apply request from user {current_user['id']} for job '{req.job_title}' at {req.job_company}")
+    print(f"[AUTO-APPLY TRIGGER] Received manual apply request from user {current_user['id']} for job '{req.job_title}' at {req.job_company} (debug_mode={req.debug_mode})")
 
     from agents.orchestrator import db_enqueue_job, run_autoapply_job_in_thread
 
@@ -1155,6 +1332,7 @@ async def manual_enqueue_job(
         # Use "queued" so the background orchestrator loop (which only polls for
         # "discovered" entries) does NOT double-execute this manually triggered job.
         initial_status="queued",
+        debug_mode=req.debug_mode or False,
     )
 
     # Build the queue entry dict that process_single_autoapply_job expects
@@ -1170,6 +1348,7 @@ async def manual_enqueue_job(
         "status": "queued",
         "attempts": 0,
         "max_attempts": 3,
+        "debug_mode": req.debug_mode or False,
     }
 
     # Dispatch to the background thread running a ProactorEventLoop
@@ -1181,6 +1360,17 @@ async def manual_enqueue_job(
         "queue_id": queue_id,
         "message": f"Job '{req.job_title}' at {req.job_company} queued for auto-application.",
     }
+
+
+@app.post("/api/autoapply/debug/finish/{task_id}", tags=["AutoApply"])
+async def finish_debug_session_endpoint(
+    task_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+):
+    """Signals that the debug session for the given task should be finished/closed."""
+    import store
+    store.finish_debug_session(task_id)
+    return {"status": "success", "message": f"Debug session for task {task_id} signaled to finish."}
 
 
 # ─── Dev entry ────────────────────────────────────────────────────────────────

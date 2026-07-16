@@ -91,3 +91,14 @@ def update_agent_status(status: AgentStatus) -> None:
 
 def get_all_agent_statuses() -> list[AgentStatus]:
     return list(_agent_statuses.values())
+
+
+# ─── Debug Sessions ───────────────────────────────────────────────────────────
+
+_finished_debug_sessions: set[str] = set()
+
+def finish_debug_session(task_id: str) -> None:
+    _finished_debug_sessions.add(task_id)
+
+def is_debug_session_finished(task_id: str) -> bool:
+    return task_id in _finished_debug_sessions
