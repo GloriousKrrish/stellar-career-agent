@@ -261,12 +261,39 @@ export function ApplyDialog({
                   </div>
                 </div>
               )}
-
               {phase === "ready" && (
                 <>
-                  <div className="rounded-2xl bg-muted/50 p-4 flex items-start gap-2.5">
-                    <Sparkles className="h-4 w-4 text-accent flex-shrink-0 mt-0.5" />
-                    <p className="text-sm text-foreground/85 leading-relaxed">{summary}</p>
+                  {/* Application Mode Indicator */}
+                  <div className="flex items-center justify-between p-3.5 rounded-2xl bg-accent/10 border border-accent/20">
+                    <div className="flex items-center gap-2">
+                      <div className="h-2 w-2 rounded-full bg-accent animate-pulse" />
+                      <span className="text-xs font-semibold text-accent uppercase tracking-[0.06em]">Application Mode: Manual Auto Apply</span>
+                    </div>
+                    <span className="text-[10px] bg-accent/20 text-accent font-semibold px-2 py-0.5 rounded-md">User Override</span>
+                  </div>
+
+                  {/* Informational Match Analysis */}
+                  <div className="rounded-2xl border border-border bg-card p-4 space-y-3 shadow-soft">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-semibold text-muted-foreground uppercase tracking-[0.06em]">Match Analysis</div>
+                      <div className="text-xs font-bold text-foreground bg-muted px-2.5 py-0.5 rounded-full">
+                        Score: {job.match}%
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2.5">
+                      <Sparkles className="h-4 w-4 text-accent flex-shrink-0 mt-0.5" />
+                      <div className="space-y-2">
+                        <p className="text-xs text-foreground/85 leading-relaxed">
+                          {job.aiRecommendation || "Aria evaluated this role as a fit for your background."}
+                        </p>
+                        <p className="text-[11px] text-foreground/75 leading-relaxed italic">
+                          {summary}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-muted-foreground bg-muted/40 p-2.5 rounded-xl border border-border/40">
+                      ℹ️ Since you explicitly clicked <strong>Auto Apply</strong>, this application will proceed directly to browser automation. The 70% AI match score threshold is bypassed.
+                    </div>
                   </div>
 
                   {errorMsg && (

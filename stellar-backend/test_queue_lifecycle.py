@@ -27,7 +27,7 @@ import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
-from datetime import datetime
+from datetime import datetime, timezone
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -66,24 +66,27 @@ def _make_temp_db() -> tuple[str, sqlite3.Connection]:
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         applied_at TEXT DEFAULT '',
-        debug_mode BOOLEAN DEFAULT 0
+        debug_mode BOOLEAN DEFAULT 0,
+        trigger_mode TEXT DEFAULT 'batch',
+        match_score INTEGER DEFAULT 0,
+        match_recommendation TEXT DEFAULT ''
     )
     """)
     conn.commit()
     return path, conn
 
 
-def _insert_queue_entry(conn: sqlite3.Connection, status: str = "discovered") -> str:
+def _insert_queue_entry(conn: sqlite3.Connection, status: str = "discovered", trigger_mode: str = "batch") -> str:
     """Insert a dummy queue entry and return its id."""
     qid  = str(uuid.uuid4())
-    now  = datetime.utcnow().isoformat()
+    now  = datetime.now(timezone.utc).isoformat()
     conn.execute("""
         INSERT INTO auto_apply_queue
           (id, user_id, run_id, job_id, job_title, job_company, job_url,
-           status, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+           status, created_at, updated_at, trigger_mode)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
     """, (qid, "u1", "r1", "j1", "Tester", "Acme", "https://example.com",
-          status, now, now))
+          status, now, now, trigger_mode))
     conn.commit()
     return qid
 
@@ -329,6 +332,65 @@ class TestQueueStats(unittest.TestCase):
         stats = self.orc.db_get_queue_stats()
         self.assertEqual(stats.get("applied", 0), 2)
         self.assertEqual(stats.get("failed", 0), 1)
+
+
+class TestQueueTriggerModes(unittest.TestCase):
+    """Verify that trigger_mode column behaves correctly and manual mode bypasses the threshold."""
+
+    def setUp(self):
+        self.db_path, self.conn = _make_temp_db()
+        import db as _db
+        import orchestrator as _orc
+        _db.IS_POSTGRES = False
+        _db.get_db_connection = lambda: sqlite3.connect(
+            self.db_path, detect_types=sqlite3.PARSE_DECLTYPES
+        )
+        import importlib
+        importlib.reload(_orc)
+        self.orc = _orc
+        self.db = _db
+
+    def tearDown(self):
+        self.conn.close()
+        try:
+            os.unlink(self.db_path)
+        except Exception:
+            pass
+
+    def _read_entry(self, qid: str) -> dict:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM auto_apply_queue WHERE id = ?", (qid,)).fetchone()
+        conn.close()
+        return dict(row) if row else {}
+
+    def test_enqueue_defaults_to_batch(self):
+        qid = self.orc.db_enqueue_job(
+            user_id="u1", run_id="r1", job_id="j1",
+            job_title="Dev", job_company="Acme", job_url="http://x.com"
+        )
+        row = self._read_entry(qid)
+        self.assertEqual(row["trigger_mode"], "batch")
+
+    def test_enqueue_custom_trigger_mode(self):
+        qid = self.orc.db_enqueue_job(
+            user_id="u1", run_id="r1", job_id="j1",
+            job_title="Dev", job_company="Acme", job_url="http://x.com",
+            trigger_mode="manual"
+        )
+        row = self._read_entry(qid)
+        self.assertEqual(row["trigger_mode"], "manual")
+
+    def test_db_update_queue_status_saves_analytics(self):
+        qid = _insert_queue_entry(self.conn, "queued")
+        self.orc.db_update_queue_status(
+            qid, "applied",
+            match_score=85,
+            match_recommendation="apply"
+        )
+        row = self._read_entry(qid)
+        self.assertEqual(row["match_score"], 85)
+        self.assertEqual(row["match_recommendation"], "apply")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

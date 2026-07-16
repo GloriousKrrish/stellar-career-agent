@@ -24,7 +24,7 @@ import os
 import sys
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from logger import get_logger
@@ -84,11 +84,32 @@ def db_init_auto_apply_table() -> None:
     )
     """)
 
+    # debug_mode column (legacy migration)
     try:
         if database.IS_POSTGRES:
             cursor.execute("ALTER TABLE auto_apply_queue ADD COLUMN IF NOT EXISTS debug_mode BOOLEAN DEFAULT FALSE")
         else:
             cursor.execute("ALTER TABLE auto_apply_queue ADD COLUMN debug_mode BOOLEAN DEFAULT 0")
+    except Exception:
+        pass
+
+    # trigger_mode: 'manual' = user-initiated (never skip), 'batch' = AI-filtered
+    try:
+        if database.IS_POSTGRES:
+            cursor.execute("ALTER TABLE auto_apply_queue ADD COLUMN IF NOT EXISTS trigger_mode TEXT DEFAULT 'batch'")
+        else:
+            cursor.execute("ALTER TABLE auto_apply_queue ADD COLUMN trigger_mode TEXT DEFAULT 'batch'")
+    except Exception:
+        pass
+
+    # analytics: AI match result
+    try:
+        if database.IS_POSTGRES:
+            cursor.execute("ALTER TABLE auto_apply_queue ADD COLUMN IF NOT EXISTS match_score INTEGER DEFAULT 0")
+            cursor.execute("ALTER TABLE auto_apply_queue ADD COLUMN IF NOT EXISTS match_recommendation TEXT DEFAULT ''")
+        else:
+            cursor.execute("ALTER TABLE auto_apply_queue ADD COLUMN match_score INTEGER DEFAULT 0")
+            cursor.execute("ALTER TABLE auto_apply_queue ADD COLUMN match_recommendation TEXT DEFAULT ''")
     except Exception:
         pass
 
@@ -107,16 +128,22 @@ def db_enqueue_job(
     job_source: str = "",
     initial_status: str = "discovered",
     debug_mode: bool = False,
+    trigger_mode: str = "batch",
 ) -> str:
     """Insert a discovered job into the auto-apply queue.
-    
+
     Args:
         initial_status: 'discovered' (for orchestrator loop pickup) or
                         'queued' (for manually-dispatched jobs, to prevent
                         double-execution by the background orchestrator loop).
+        trigger_mode: 'manual' = user explicitly clicked Auto Apply on a specific
+                      job — AI match score is informational only, never blocks.
+                      'batch'  = automated job discovery — AI threshold is enforced.
     """
     queue_id = str(uuid.uuid4())
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
+    # Normalise trigger_mode — only two valid values
+    safe_trigger_mode = "manual" if str(trigger_mode).lower() == "manual" else "batch"
 
     conn = database.get_db_connection()
     cursor = database.get_db_cursor(conn)
@@ -125,19 +152,19 @@ def db_enqueue_job(
         cursor.execute("""
         INSERT INTO auto_apply_queue (
             id, user_id, run_id, job_id, job_title, job_company, job_url, job_source,
-            status, created_at, updated_at, debug_mode
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            status, created_at, updated_at, debug_mode, trigger_mode
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (id) DO NOTHING
         """, (queue_id, user_id, run_id, job_id, job_title, job_company, job_url,
-              job_source, initial_status, now, now, debug_mode))
+              job_source, initial_status, now, now, debug_mode, safe_trigger_mode))
     else:
         cursor.execute("""
         INSERT OR IGNORE INTO auto_apply_queue (
             id, user_id, run_id, job_id, job_title, job_company, job_url, job_source,
-            status, created_at, updated_at, debug_mode
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            status, created_at, updated_at, debug_mode, trigger_mode
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (queue_id, user_id, run_id, job_id, job_title, job_company, job_url,
-              job_source, initial_status, now, now, 1 if debug_mode else 0))
+              job_source, initial_status, now, now, 1 if debug_mode else 0, safe_trigger_mode))
 
     conn.commit()
     conn.close()
@@ -198,9 +225,11 @@ def db_update_queue_status(
     screenshot_path: str = "",
     fields_filled: int = 0,
     ats_platform: str = "",
+    match_score: int = 0,
+    match_recommendation: str = "",
 ) -> None:
     """Update the status of a queue entry after an application attempt."""
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     conn = database.get_db_connection()
     cursor = database.get_db_cursor(conn)
 
@@ -216,10 +245,12 @@ def db_update_queue_status(
             ats_platform = %s,
             attempts = attempts + 1,
             updated_at = %s,
-            applied_at = %s
+            applied_at = %s,
+            match_score = %s,
+            match_recommendation = %s
         WHERE id = %s
         """, (status, failure_reason, screenshot_path, fields_filled,
-              ats_platform, now, applied_at, queue_id))
+              ats_platform, now, applied_at, match_score, match_recommendation, queue_id))
     else:
         cursor.execute("""
         UPDATE auto_apply_queue SET
@@ -230,10 +261,12 @@ def db_update_queue_status(
             ats_platform = ?,
             attempts = attempts + 1,
             updated_at = ?,
-            applied_at = ?
+            applied_at = ?,
+            match_score = ?,
+            match_recommendation = ?
         WHERE id = ?
         """, (status, failure_reason, screenshot_path, fields_filled,
-              ats_platform, now, applied_at, queue_id))
+              ats_platform, now, applied_at, match_score, match_recommendation, queue_id))
 
     conn.commit()
     conn.close()
@@ -241,7 +274,7 @@ def db_update_queue_status(
 
 def db_mark_as_queued(queue_id: str) -> None:
     """Transition a job from 'discovered' → 'queued' (claimed by orchestrator)."""
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     conn = database.get_db_connection()
     cursor = database.get_db_cursor(conn)
 
@@ -566,13 +599,18 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
             log.warning(f"Failed to retrieve job description: {e}")
 
         # ── Evaluate Job Match (Phase 4 - AI Job Matching) ────────────────────
+        # trigger_mode drives whether the AI score is a gate or just advisory.
         threshold = 70
+        trigger_mode = str(entry.get("trigger_mode", "batch")).lower()
+        is_manual = trigger_mode == "manual"
+
+        mode_label = "📱 Manual Auto Apply" if is_manual else "🤖 Smart Auto Apply (Batch)"
         await _emit_autoapply_event(
             run_id, "log",
-            f"[AutoApplyAgent]: 🔍 Evaluating job match fit for {entry['job_title']}...",
+            f"[AutoApplyAgent]: {mode_label} — 🔍 Evaluating job match for {entry['job_title']}...",
             user_id=user_id
         )
-        
+
         evaluation = await agent.evaluate_job_match(
             user=user_profile,
             job_title=entry['job_title'],
@@ -581,23 +619,50 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
             resume_text=resume_raw_text or user_profile.summary,
             threshold=threshold
         )
-        
+
         match_score = evaluation.get("match_score", 0)
         recommendation = evaluation.get("recommendation", "skip")
         explanation = evaluation.get("explanation", "")
-        
-        log.info(f"[{queue_id[:8]}] Job Match Evaluation: Score={match_score}, Rec={recommendation}")
+
+        # Determine decision source
+        if is_manual:
+            decision_source = "User Override"
+            decision_note = (
+                f"Match Score: {match_score}% | AI Recommendation: {recommendation.upper()} — "
+                "OVERRIDDEN: User explicitly clicked Auto Apply. Proceeding regardless of score."
+            )
+        else:
+            decision_source = "AI Threshold"
+            decision_note = f"Match Score: {match_score}% | Recommendation: {recommendation.upper()}"
+
+        log.info(f"[{queue_id[:8]}] Job Match — Score={match_score}% | Rec={recommendation} | DecisionSource={decision_source}")
         await _emit_autoapply_event(
             run_id, "log",
-            f"[AutoApplyAgent]: 📊 Fit analysis complete. Match Score: {match_score}% | Recommendation: {recommendation.upper()}",
+            f"[AutoApplyAgent]: 📊 {decision_note}",
+            {
+                "match_score": match_score,
+                "recommendation": recommendation,
+                "decision_source": decision_source,
+                "trigger_mode": trigger_mode,
+            },
             user_id=user_id
         )
-        
-        if recommendation == "skip" and match_score < threshold:
-            # NOTE: db_update_queue_status lives in orchestrator.py, NOT in db.py.
-            # Always call it directly — never via the `database` alias.
+
+        # ── Match Gate: only enforced in batch mode ───────────────────────────
+        should_skip = (
+            not is_manual           # only batch mode enforces the threshold
+            and recommendation == "skip"
+            and match_score < threshold
+        )
+
+        if should_skip:
             try:
-                db_update_queue_status(queue_id, "skipped", failure_reason=f"Skipped: match score {match_score}% is below threshold {threshold}%. Explanation: {explanation}")
+                db_update_queue_status(
+                    queue_id, "skipped",
+                    failure_reason=f"Skipped: match score {match_score}% is below threshold {threshold}%. Explanation: {explanation}",
+                    match_score=match_score,
+                    match_recommendation=recommendation,
+                )
             except Exception as db_err:
                 log.error(f"[{queue_id[:8]}] Failed to update queue status to 'skipped': {db_err}")
             await _emit_autoapply_event(
@@ -619,7 +684,7 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
                     "location": existing.get("location", "") if existing else "",
                     "salary": existing.get("salary", "") if existing else "",
                     "url": job_url,
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                 })
                 await _emit_autoapply_event(
                     run_id, "application_completed",
@@ -632,13 +697,23 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
                         "job_company": entry["job_company"],
                         "stage": "skipped",
                         "explanation": explanation,
-                        "match_score": match_score
+                        "match_score": match_score,
+                        "decision_source": decision_source,
+                        "trigger_mode": trigger_mode,
                     },
                     user_id=user_id
                 )
             except Exception as e:
                 log.error(f"Failed to update app to skipped stage: {e}")
             return
+
+        # Manual override: inform the user the AI score is advisory only
+        if is_manual and recommendation == "skip":
+            await _emit_autoapply_event(
+                run_id, "log",
+                f"[AutoApplyAgent]: ℹ️ AI score ({match_score}%) is below threshold but you clicked Auto Apply — proceeding as requested.",
+                user_id=user_id
+            )
 
         # ── Emit "starting" progress ──────────────────────────────────────────
         await _emit_autoapply_event(
@@ -706,7 +781,7 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
             debug_mode=bool(entry.get("debug_mode", False)),
         )
 
-        # ── Update database with result ───────────────────────────────────────
+        # ── Update database with result + analytics ───────────────────────────
         status = result.get("status", "failed")
         reason = result.get("reason", "")
         db_update_queue_status(
@@ -716,6 +791,8 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
             screenshot_path=result.get("screenshot", ""),
             fields_filled=result.get("fields_filled", 0),
             ats_platform=result.get("ats_platform", ""),
+            match_score=match_score,
+            match_recommendation=recommendation,
         )
 
         # ── Update the applications table if successfully applied or simulated ─
@@ -735,7 +812,7 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
                     "location": existing.get("location", "") if existing else "",
                     "salary": existing.get("salary", "") if existing else "",
                     "url": job_url,
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                 })
                 log.info(f"Transitioned job application {app_id[:8]} to 'applied' stage.")
             except Exception as e:

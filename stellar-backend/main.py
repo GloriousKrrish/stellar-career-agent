@@ -857,7 +857,12 @@ async def apply_to_job(
     job_id: str,
     current_user: Optional[dict[str, Any]] = Depends(get_current_user_optional),
 ):
-    """Trigger the direct application automation for a specific job."""
+    """Trigger the direct application automation for a specific job.
+    
+    This endpoint is called when a user manually clicks Auto Apply on a job card.
+    trigger_mode is always 'manual' — the AI match score is informational only
+    and will never block the application.
+    """
     state = store.get_workflow(run_id)
     if not state:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -879,6 +884,7 @@ async def apply_to_job(
         job_url=job.url,
         job_source=job.source or "Web",
         initial_status="queued",
+        trigger_mode="manual",  # User-initiated — never skip
     )
 
     entry = {
@@ -893,6 +899,7 @@ async def apply_to_job(
         "status": "queued",
         "attempts": 0,
         "max_attempts": 3,
+        "trigger_mode": "manual",
     }
 
     run_autoapply_job_in_thread(entry)
@@ -1309,6 +1316,9 @@ class ManualEnqueueRequest(BaseModel):
     job_url: str
     job_source: str = ""
     debug_mode: Optional[bool] = False
+    # 'manual' = user explicitly clicked Auto Apply (AI score is advisory only)
+    # 'batch'  = automated job discovery (AI threshold is enforced)
+    trigger_mode: str = "manual"  # Default to manual since this endpoint is user-triggered
 
 
 @app.post("/api/autoapply/enqueue", tags=["AutoApply"])
@@ -1316,8 +1326,13 @@ async def manual_enqueue_job(
     req: ManualEnqueueRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
 ):
-    """Manually enqueue a specific job for auto-application via the Python orchestrator."""
-    print(f"[AUTO-APPLY TRIGGER] Received manual apply request from user {current_user['id']} for job '{req.job_title}' at {req.job_company} (debug_mode={req.debug_mode})")
+    """Manually enqueue a specific job for auto-application via the Python orchestrator.
+    
+    trigger_mode defaults to 'manual' — the AI match score is shown but never blocks
+    the application when the user has explicitly requested it.
+    """
+    trigger = req.trigger_mode if req.trigger_mode in ("manual", "batch") else "manual"
+    print(f"[AUTO-APPLY TRIGGER] Received manual apply request from user {current_user['id']} for job '{req.job_title}' at {req.job_company} (debug_mode={req.debug_mode}, trigger_mode={trigger})")
 
     from agents.orchestrator import db_enqueue_job, run_autoapply_job_in_thread
 
@@ -1333,6 +1348,7 @@ async def manual_enqueue_job(
         # "discovered" entries) does NOT double-execute this manually triggered job.
         initial_status="queued",
         debug_mode=req.debug_mode or False,
+        trigger_mode=trigger,
     )
 
     # Build the queue entry dict that process_single_autoapply_job expects
@@ -1349,11 +1365,12 @@ async def manual_enqueue_job(
         "attempts": 0,
         "max_attempts": 3,
         "debug_mode": req.debug_mode or False,
+        "trigger_mode": trigger,
     }
 
     # Dispatch to the background thread running a ProactorEventLoop
     run_autoapply_job_in_thread(new_entry)
-    print(f"[AUTO-APPLY LAUNCHED] Spawned process_single_autoapply_job for task {queue_id[:8]} in background thread")
+    print(f"[AUTO-APPLY LAUNCHED] Spawned process_single_autoapply_job for task {queue_id[:8]} in background thread (trigger_mode={trigger})")
 
     return {
         "status": "enqueued",
