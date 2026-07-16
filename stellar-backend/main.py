@@ -1390,6 +1390,61 @@ async def finish_debug_session_endpoint(
     return {"status": "success", "message": f"Debug session for task {task_id} signaled to finish."}
 
 
+class BrowserSettingsUpdateRequest(BaseModel):
+    mode: str
+    browser_executable_path: Optional[str] = None
+    profile_path: Optional[str] = None
+    keep_open: bool
+    debug_logging: bool
+    headless: bool
+    slow_mo: int
+
+
+@app.get("/api/settings/browser", tags=["Settings"])
+async def get_browser_settings(
+    current_user: Optional[dict[str, Any]] = Depends(get_current_user_optional),
+):
+    from browser_config import get_browser_config
+    user_id = current_user["id"] if current_user else None
+    cfg = get_browser_config(user_id)
+    return cfg.to_dict()
+
+
+@app.post("/api/settings/browser", tags=["Settings"])
+async def update_browser_settings(
+    req: BrowserSettingsUpdateRequest,
+    current_user: Optional[dict[str, Any]] = Depends(get_current_user_optional),
+):
+    from browser_config import BrowserConfig, save_browser_config
+    user_id = current_user["id"] if current_user else None
+    
+    cfg = BrowserConfig(
+        mode=req.mode,
+        browser_executable_path=req.browser_executable_path or None,
+        profile_path=req.profile_path or None,
+        keep_open=req.keep_open,
+        debug_logging=req.debug_logging,
+        headless=req.headless,
+        slow_mo=req.slow_mo,
+    )
+    
+    if cfg.is_development:
+        in_use, reason = cfg.is_profile_in_use()
+        if in_use:
+            raise HTTPException(
+                status_code=400,
+                detail=reason
+            )
+            
+    save_browser_config(cfg, user_id)
+    return {
+        "status": "success",
+        "message": "Browser settings updated successfully.",
+        "config": cfg.to_dict()
+    }
+
+
+
 # ─── Dev entry ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

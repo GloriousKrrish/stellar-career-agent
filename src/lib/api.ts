@@ -227,4 +227,35 @@ export const api = {
       method: "POST",
     });
   },
+
+  async getBrowserSettings() {
+    return request<{
+      mode: string;
+      browser_executable_path: string;
+      profile_path: string;
+      keep_open: boolean;
+      debug_logging: boolean;
+      headless: boolean;
+      slow_mo: number;
+      effective_profile_path: string;
+      is_development: boolean;
+      effective_headless: boolean;
+      effective_keep_open: boolean;
+    }>("/api/settings/browser");
+  },
+
+  async updateBrowserSettings(settings: {
+    mode: string;
+    browser_executable_path?: string;
+    profile_path?: string;
+    keep_open: boolean;
+    debug_logging: boolean;
+    headless: boolean;
+    slow_mo: number;
+  }) {
+    return request<any>("/api/settings/browser", {
+      method: "POST",
+      body: JSON.stringify(settings),
+    });
+  },
 };

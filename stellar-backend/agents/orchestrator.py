@@ -768,6 +768,9 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
         async def on_progress(msg: str):
             await _emit_autoapply_event(run_id, "log", msg, user_id=user_id)
 
+        from browser_config import get_browser_config
+        user_browser_config = get_browser_config(user_id)
+
         result = await agent.apply_to_job(
             task_id=queue_id,
             job_url=job_url,
@@ -779,6 +782,7 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
             job_description=job_description,
             resume_text=resume_raw_text,
             debug_mode=bool(entry.get("debug_mode", False)),
+            browser_config=user_browser_config,
         )
 
         # ── Update database with result + analytics ───────────────────────────

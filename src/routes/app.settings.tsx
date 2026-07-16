@@ -1,28 +1,55 @@
 "use client";
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { CheckCircle2, Plus } from "lucide-react";
+import { useState, useEffect } from "react";
+import { CheckCircle2, Plus, AlertCircle, Info, Chrome, Loader2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { PageHeader } from "@/components/shell/sidebar";
 import { CONNECTIONS } from "@/lib/mock/user";
 import { getCurrentUser } from "@/lib/auth";
+import { api } from "@/lib/api";
 
 export const Route = createFileRoute("/app/settings")({
   head: () => ({
     meta: [
       { title: "Settings — Aria" },
-      { name: "description", content: "Profile, notifications, privacy and integrations." },
+      { name: "description", content: "Profile, notifications, privacy, integrations and browser automation settings." },
     ],
   }),
   component: SettingsPage,
 });
 
-const sections = ["Profile", "Notifications", "Privacy", "Connected Platforms"] as const;
+const sections = ["Profile", "Notifications", "Privacy", "Connected Platforms", "Browser Automation"] as const;
 
-function Toggle({ defaultOn = true }: { defaultOn?: boolean }) {
-  const [on, setOn] = useState(defaultOn);
+function Toggle({ 
+  defaultOn = true, 
+  value, 
+  onChange, 
+  disabled 
+}: { 
+  defaultOn?: boolean; 
+  value?: boolean; 
+  onChange?: (val: boolean) => void;
+  disabled?: boolean;
+}) {
+  const [internalOn, setInternalOn] = useState(defaultOn);
+  const on = value !== undefined ? value : internalOn;
+
+  const handleToggle = () => {
+    if (disabled) return;
+    if (value === undefined) {
+      setInternalOn(!on);
+    }
+    if (onChange) {
+      onChange(!on);
+    }
+  };
+
   return (
-    <button onClick={() => setOn(!on)} className={`w-10 h-6 rounded-full p-0.5 transition-colors ${on ? "bg-accent" : "bg-muted"}`}>
+    <button 
+      onClick={handleToggle} 
+      disabled={disabled}
+      className={`w-10 h-6 rounded-full p-0.5 transition-colors ${on ? "bg-accent" : "bg-muted"} ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+    >
       <motion.div layout className="h-5 w-5 rounded-full bg-background shadow" style={{ marginLeft: on ? 16 : 0 }} />
     </button>
   );
@@ -31,6 +58,21 @@ function Toggle({ defaultOn = true }: { defaultOn?: boolean }) {
 function SettingsPage() {
   const [section, setSection] = useState<typeof sections[number]>("Profile");
   const [connections, setConnections] = useState(CONNECTIONS);
+
+  // Browser Automation States
+  const [browserMode, setBrowserMode] = useState<"production" | "development">("production");
+  const [executablePath, setExecutablePath] = useState("");
+  const [profilePath, setProfilePath] = useState("");
+  const [keepOpen, setKeepOpen] = useState(false);
+  const [debugLogging, setDebugLogging] = useState(false);
+  const [headless, setHeadless] = useState(false);
+  const [slowMo, setSlowMo] = useState(1200);
+  
+  const [effectiveProfilePath, setEffectiveProfilePath] = useState("");
+  const [loadingSettings, setLoadingSettings] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const user = getCurrentUser() || {
     name: "Job Seeker",
@@ -42,6 +84,70 @@ function SettingsPage() {
   const initials = user.name
     ? user.name.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2)
     : "JS";
+
+  // Load browser settings from backend
+  useEffect(() => {
+    if (section === "Browser Automation") {
+      loadBrowserSettings();
+    }
+  }, [section]);
+
+  const loadBrowserSettings = async () => {
+    setLoadingSettings(true);
+    setErrorMsg(null);
+    try {
+      const data = await api.getBrowserSettings();
+      setBrowserMode(data.mode as any);
+      setExecutablePath(data.browser_executable_path || "");
+      setProfilePath(data.profile_path || "");
+      setKeepOpen(data.keep_open);
+      setDebugLogging(data.debug_logging);
+      setHeadless(data.headless);
+      setSlowMo(data.slow_mo);
+      setEffectiveProfilePath(data.effective_profile_path || "");
+    } catch (err: any) {
+      setErrorMsg(err.message || "Failed to load browser automation settings.");
+    } finally {
+      setLoadingSettings(false);
+    }
+  };
+
+  const saveSettings = async () => {
+    setSaving(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const result = await api.updateBrowserSettings({
+        mode: browserMode,
+        browser_executable_path: executablePath.trim() || undefined,
+        profile_path: profilePath.trim() || undefined,
+        keep_open: keepOpen,
+        debug_logging: debugLogging,
+        headless: headless,
+        slow_mo: slowMo,
+      });
+      setSuccessMsg(result.message || "Browser automation settings saved successfully.");
+      if (result.config) {
+        setEffectiveProfilePath(result.config.effective_profile_path || "");
+        // If mode changed to development, sync the keepOpen toggle value
+        if (result.config.mode === "development") {
+          setKeepOpen(true);
+        }
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || "Failed to save browser settings.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Sync keepOpen / headless states when browserMode switches
+  useEffect(() => {
+    if (browserMode === "development") {
+      setKeepOpen(true);
+      setHeadless(false);
+    }
+  }, [browserMode]);
 
   return (
     <>
@@ -139,6 +245,181 @@ function SettingsPage() {
                   </button>
                 </div>
               ))}
+            </div>
+          )}
+
+          {section === "Browser Automation" && (
+            <div className="rounded-2xl border border-border bg-card p-6 shadow-soft space-y-6">
+              <div>
+                <h3 className="text-lg font-display font-semibold flex items-center gap-2 text-foreground">
+                  <Chrome className="h-5 w-5 text-accent" />
+                  Browser Automation Settings
+                </h3>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Configure browser profiles and execution settings for the autonomous job application engine.
+                </p>
+              </div>
+
+              {loadingSettings ? (
+                <div className="flex items-center justify-center py-10">
+                  <Loader2 className="h-8 w-8 animate-spin text-accent" />
+                  <span className="ml-2 text-sm text-muted-foreground">Loading settings...</span>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {/* Mode Alert Banner */}
+                  <div className={`p-4 rounded-xl border flex gap-3 ${
+                    browserMode === "development" 
+                      ? "bg-amber-500/10 border-amber-500/20 text-amber-200" 
+                      : "bg-blue-500/10 border-blue-500/20 text-blue-200"
+                  }`}>
+                    <Info className="h-5 w-5 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-semibold text-sm">
+                        {browserMode === "development" ? "Development Mode Active" : "Production Mode Active"}
+                      </div>
+                      <div className="text-xs opacity-90 mt-1">
+                        {browserMode === "development" 
+                          ? `Reuses active login sessions and leaves browser open. Resolved path: ${effectiveProfilePath || "Using Default Sub-profile"}`
+                          : "Launches isolated context for each application. Closes automatically on completion."}
+                      </div>
+                    </div>
+                  </div>
+
+                  {errorMsg && (
+                    <div className="p-3 bg-red-500/15 border border-red-500/20 rounded-xl flex gap-2 text-red-200 text-xs">
+                      <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                      <div>{errorMsg}</div>
+                    </div>
+                  )}
+
+                  {successMsg && (
+                    <div className="p-3 bg-emerald-500/15 border border-emerald-500/20 rounded-xl flex gap-2 text-emerald-200 text-xs">
+                      <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
+                      <div>{successMsg}</div>
+                    </div>
+                  )}
+
+                  <div className="grid sm:grid-cols-2 gap-5">
+                    {/* Browser Mode */}
+                    <div className="space-y-2">
+                      <label className="block text-xs font-medium text-muted-foreground">Browser Automation Mode</label>
+                      <select 
+                        value={browserMode}
+                        onChange={(e) => setBrowserMode(e.target.value as any)}
+                        className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent"
+                      >
+                        <option value="production">Production Mode (Isolated Context)</option>
+                        <option value="development">Development Mode (Persistent User Profile)</option>
+                      </select>
+                    </div>
+
+                    {/* Executable Path */}
+                    <div className="space-y-2">
+                      <label className="block text-xs font-medium text-muted-foreground">Browser Executable Path (Optional)</label>
+                      <input 
+                        type="text" 
+                        value={executablePath}
+                        onChange={(e) => setExecutablePath(e.target.value)}
+                        placeholder="Default Playwright Chromium"
+                        className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent"
+                      />
+                      <span className="text-[10px] text-muted-foreground block">
+                        Leave blank to use default built-in browser instance.
+                      </span>
+                    </div>
+
+                    {/* Profile Path */}
+                    <div className="space-y-2 sm:col-span-2">
+                      <label className="block text-xs font-medium text-muted-foreground">Chrome Profile Data Directory</label>
+                      <input 
+                        type="text" 
+                        value={profilePath}
+                        onChange={(e) => setProfilePath(e.target.value)}
+                        placeholder="e.g. C:\Users\YourUser\AppData\Local\Google\Chrome\User Data\StellarProfile"
+                        className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent"
+                      />
+                      <span className="text-[10px] text-muted-foreground block">
+                        Path to Chrome user data directory. In development mode, session cookies will be preserved here.
+                      </span>
+                    </div>
+
+                    {/* Slow-mo */}
+                    <div className="space-y-2">
+                      <label className="block text-xs font-medium text-muted-foreground">Slow-mo Pacing (ms)</label>
+                      <input 
+                        type="number" 
+                        value={slowMo}
+                        onChange={(e) => setSlowMo(parseInt(e.target.value) || 0)}
+                        placeholder="1200"
+                        className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent"
+                      />
+                      <span className="text-[10px] text-muted-foreground block">
+                        Delay between actions to look human.
+                      </span>
+                    </div>
+
+                    {/* Headless Checkbox */}
+                    <div className="space-y-2 flex flex-col justify-end">
+                      <div className="flex items-center gap-3 p-1">
+                        <input 
+                          type="checkbox" 
+                          id="headless"
+                          checked={headless}
+                          onChange={(e) => setHeadless(e.target.checked)}
+                          disabled={browserMode === "development"}
+                          className="h-4 w-4 rounded border-border bg-background accent-accent"
+                        />
+                        <label htmlFor="headless" className="text-xs font-medium select-none cursor-pointer text-muted-foreground">
+                          Run Headless (no browser window)
+                        </label>
+                      </div>
+                      <span className="text-[10px] text-muted-foreground block ml-7">
+                        {browserMode === "development" ? "Headless is disabled in Development Mode." : "Run browser invisibly in the background."}
+                      </span>
+                    </div>
+                  </div>
+
+                  <hr className="border-border" />
+
+                  {/* Toggles */}
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-medium">Keep Browser Open</div>
+                        <div className="text-xs text-muted-foreground">Prevent browser window from closing after application completion.</div>
+                      </div>
+                      <Toggle 
+                        value={keepOpen} 
+                        onChange={(on) => setKeepOpen(on)}
+                        disabled={browserMode === "development"}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-medium">Debug Logging</div>
+                        <div className="text-xs text-muted-foreground">Stream detailed automation actions to the WebSocket progress log.</div>
+                      </div>
+                      <Toggle 
+                        value={debugLogging} 
+                        onChange={(on) => setDebugLogging(on)}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex justify-end">
+                    <button
+                      onClick={saveSettings}
+                      disabled={saving}
+                      className="rounded-xl bg-foreground text-background font-medium text-xs px-4 py-2 hover:opacity-90 transition-opacity flex items-center gap-2"
+                    >
+                      {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                      Save Browser Settings
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

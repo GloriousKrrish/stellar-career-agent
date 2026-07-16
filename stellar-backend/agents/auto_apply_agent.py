@@ -142,6 +142,7 @@ class PlaywrightManager:
         self.browser = None
         self.context = None
         self.page = None
+        self._persistent_mode = False   # True when using launch_persistent_context
 
     def _kill_orphaned_browsers(self) -> None:
         """Force-kills orphaned Playwright Chromium processes to avoid memory leaks."""
@@ -160,59 +161,125 @@ class PlaywrightManager:
         if killed_count > 0:
             log.info(f"Cleaned up {killed_count} lingering Playwright processes.")
 
-    async def init_browser(self, headless: bool = False, slow_mo: int = 1500) -> tuple[Any, Any, Any]:
-        await self.logger.log("🧹 Checking and cleaning lingering browser processes...")
-        try:
-            self._kill_orphaned_browsers()
-        except Exception as e:
-            log.warning(f"Lingering cleanup error: {e}")
+    async def init_browser(
+        self,
+        headless: bool = False,
+        slow_mo: int = 1500,
+        browser_config=None,          # type: ignore[annotation]
+    ) -> tuple[Any, Any, Any]:
+        """
+        Launch the browser according to browser_config.
 
-        await self.logger.log("🔧 Initializing Playwright browser engine...")
+        Development Mode  → ``launch_persistent_context``  (reuses login sessions)
+        Production Mode   → ``launch`` + ``new_context``   (isolated, closed after run)
+        """
         from playwright.async_api import async_playwright
-        self.pw = await async_playwright().start()
 
-        self.browser = await self.pw.chromium.launch(
-            headless=headless,
-            slow_mo=slow_mo,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-accelerated-2d-canvas",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-                "--start-maximized",
-            ],
-        )
+        # Resolve config — fall back to a minimal default if none supplied
+        cfg = browser_config
+        if cfg is None:
+            from browser_config import BrowserConfig
+            cfg = BrowserConfig()  # env-driven defaults
 
-        viewport = random.choice(VIEWPORT_POOL)
-        user_agent = random.choice(UA_POOL)
+        if cfg.is_development:
+            await self.logger.log("🟡 [DEV MODE] Launching Chrome with persistent profile — session cookies will be reused...")
+            await self.logger.log(f"🗂️  Profile path: {cfg.effective_profile_path}")
 
-        await self.logger.log("✅ Browser window opened — creating secure browsing context...")
-        self.context = await self.browser.new_context(
-            viewport=viewport,
-            user_agent=user_agent,
-            locale="en-IN",
-            timezone_id="Asia/Kolkata",
-            java_script_enabled=True,
-        )
+            # Safety: refuse to launch if the profile is already in use
+            in_use, reason = cfg.is_profile_in_use()
+            if in_use:
+                await self.logger.log(f"❌ [DEV MODE] Profile conflict: {reason}")
+                raise RuntimeError(f"Chrome profile is already in use: {reason}")
 
-        # Inject stealth overrides
-        await self.context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            window.chrome = { runtime: {} };
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) =>
-                parameters.name === 'notifications'
-                    ? Promise.resolve({ state: Notification.permission })
-                    : originalQuery(parameters);
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'hi'] });
-        """)
+            await self.logger.log("🔧 Initializing Playwright browser engine (Development Mode)...")
+            self.pw = await async_playwright().start()
+            self._persistent_mode = True
 
-        self.page = await self.context.new_page()
+            launch_kwargs: dict = {
+                "headless": cfg.effective_headless,
+                "slow_mo": cfg.slow_mo,
+                "args": [
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--start-maximized",
+                ],
+            }
+            if cfg.browser_executable_path:
+                launch_kwargs["executable_path"] = cfg.browser_executable_path
+
+            # launch_persistent_context returns a BrowserContext directly
+            import os as _os
+            _os.makedirs(cfg.effective_profile_path, exist_ok=True)
+            self.context = await self.pw.chromium.launch_persistent_context(
+                user_data_dir=cfg.effective_profile_path,
+                **launch_kwargs,
+            )
+            self.browser = None  # not available in persistent-context mode
+            self.page = await self.context.new_page()
+
+            await self.logger.log("✅ [DEV MODE] Browser opened with persistent profile. Login sessions are active.")
+            await self.logger.log("🔶 Development Mode is ACTIVE — browser will remain open after the run.")
+
+        else:  # Production Mode
+            await self.logger.log("🔧 Initializing Playwright browser engine (Production Mode)...")
+            await self.logger.log("🧹 Checking and cleaning lingering browser processes...")
+            try:
+                self._kill_orphaned_browsers()
+            except Exception as e:
+                log.warning(f"Lingering cleanup error: {e}")
+
+            self.pw = await async_playwright().start()
+            self._persistent_mode = False
+
+            launch_kwargs = {
+                "headless": cfg.effective_headless,
+                "slow_mo": cfg.slow_mo,
+                "args": [
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-accelerated-2d-canvas",
+                    "--disable-gpu",
+                    "--no-first-run",
+                    "--no-zygote",
+                    "--start-maximized",
+                ],
+            }
+            if cfg.browser_executable_path:
+                launch_kwargs["executable_path"] = cfg.browser_executable_path
+
+            self.browser = await self.pw.chromium.launch(**launch_kwargs)
+
+            viewport = random.choice(VIEWPORT_POOL)
+            user_agent = random.choice(UA_POOL)
+
+            await self.logger.log("✅ Browser window opened — creating secure browsing context...")
+            self.context = await self.browser.new_context(
+                viewport=viewport,
+                user_agent=user_agent,
+                locale="en-IN",
+                timezone_id="Asia/Kolkata",
+                java_script_enabled=True,
+            )
+
+            # Inject stealth overrides
+            await self.context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                window.chrome = { runtime: {} };
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) =>
+                    parameters.name === 'notifications'
+                        ? Promise.resolve({ state: Notification.permission })
+                        : originalQuery(parameters);
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'hi'] });
+            """)
+
+            self.page = await self.context.new_page()
+
         return self.browser, self.context, self.page
 
     async def cleanup(self) -> None:
@@ -1285,6 +1352,7 @@ Do not include any markdown wrappers or surrounding text.
         job_description: str = "",
         resume_text: str = "",
         debug_mode: bool = False,
+        browser_config=None,  # type: BrowserConfig | None
     ) -> dict[str, Any]:
         logger = ResultLogger(task_id, on_progress)
         
@@ -1333,15 +1401,32 @@ Do not include any markdown wrappers or surrounding text.
             context = None
             page = None
 
+            # Resolve browser config — user settings override debug_mode flag
+            from browser_config import BrowserConfig, get_browser_config
+            if browser_config is None:
+                browser_config = get_browser_config()
+            # debug_mode forces Development-like behaviour (keep open, headful)
+            if debug_mode and not browser_config.is_development:
+                import dataclasses
+                browser_config = dataclasses.replace(browser_config, mode="development")
+
+            # Log active mode banner to WebSocket stream
+            if browser_config.is_development:
+                await logger.log("🟡 ═══════════════════════════════════════")
+                await logger.log("🟡  DEVELOPMENT MODE ACTIVE")
+                await logger.log(f"🟡  Profile: {browser_config.effective_profile_path}")
+                await logger.log("🟡  Login sessions will be reused.")
+                await logger.log("🟡  Browser will remain open after the run.")
+                await logger.log("🟡 ═══════════════════════════════════════")
+            else:
+                await logger.log("🔵 Production Mode — isolated browser context.")
+
             async def run_internal():
                 nonlocal browser, context, page, current_func
-                headless_env = os.getenv("AUTOAPPLY_HEADLESS", "false").lower()
-                headless_val = headless_env in ("true", "1", "yes")
-                if debug_mode:
-                    headless_val = False  # Debug mode must run headful
-                slow_mo_val = int(os.getenv("AUTOAPPLY_SLOW_MO", "1200"))
 
-                browser, context, page = await manager.init_browser(headless=headless_val, slow_mo=slow_mo_val)
+                browser, context, page = await manager.init_browser(
+                    browser_config=browser_config,
+                )
 
                 # Step 1: Browser Launch Pause
                 await self._pause_and_screenshot("browser_launch", page, logger, task_id, debug_mode)
@@ -1748,25 +1833,25 @@ Do not include any markdown wrappers or surrounding text.
             else:
                 await logger.log("📋 FIRST FUNCTION THAT BLOCKED / NEVER RETURNED: None (all completed or exited)")
 
-            if not debug_mode:
+            if not browser_config.effective_keep_open:
                 if 'manager' in locals() and manager:
                     await manager.cleanup()
             else:
-                await logger.log("ℹ️ [DEBUG] Browser left open for manual inspection.")
+                await logger.log("ℹ️ Browser is kept open (Development Mode or keep_open=True).")
                 while True:
                     try:
                         if page is None or page.is_closed():
                             break
                     except Exception:
                         break
-                    
+
                     import store
                     if store.is_debug_session_finished(task_id):
                         break
-                        
+
                     await asyncio.sleep(1.0)
-                
-                await logger.log("🧹 [DEBUG] Cleaning up debug browser instance...")
+
+                await logger.log("🧹 Cleaning up browser instance...")
                 if 'manager' in locals() and manager:
                     await manager.cleanup()
 
@@ -1935,6 +2020,7 @@ class AutoApplyAgent:
         job_description: str = "",
         resume_text: str = "",
         debug_mode: bool = False,
+        browser_config=None,  # type: BrowserConfig | None
     ) -> dict[str, Any]:
         return await self.engine.run(
             task_id=task_id,
@@ -1947,4 +2033,5 @@ class AutoApplyAgent:
             job_description=job_description,
             resume_text=resume_text,
             debug_mode=debug_mode,
+            browser_config=browser_config,
         )
