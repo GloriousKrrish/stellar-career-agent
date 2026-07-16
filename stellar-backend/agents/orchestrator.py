@@ -281,7 +281,17 @@ def db_get_queue_stats(user_id: Optional[str] = None) -> dict[str, int]:
 
     rows = cursor.fetchall()
     conn.close()
-    return {dict(r)["status"]: dict(r)["cnt"] for r in rows}
+
+    result: dict[str, int] = {}
+    for r in rows:
+        try:
+            # Works when conn.row_factory = sqlite3.Row (production path)
+            row_dict = dict(r)
+        except (TypeError, ValueError):
+            # Fallback: plain tuple returned by a cursor without row_factory
+            row_dict = {"status": r[0], "cnt": r[1]}
+        result[row_dict["status"]] = int(row_dict["cnt"])
+    return result
 
 
 def db_get_queue_entries(user_id: str, limit: int = 50) -> list[dict]:
@@ -584,7 +594,12 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
         )
         
         if recommendation == "skip" and match_score < threshold:
-            database.db_update_queue_status(queue_id, "skipped", failure_reason=f"Skipped: match score {match_score}% is below threshold {threshold}%. Explanation: {explanation}")
+            # NOTE: db_update_queue_status lives in orchestrator.py, NOT in db.py.
+            # Always call it directly — never via the `database` alias.
+            try:
+                db_update_queue_status(queue_id, "skipped", failure_reason=f"Skipped: match score {match_score}% is below threshold {threshold}%. Explanation: {explanation}")
+            except Exception as db_err:
+                log.error(f"[{queue_id[:8]}] Failed to update queue status to 'skipped': {db_err}")
             await _emit_autoapply_event(
                 run_id, "log",
                 f"[AutoApplyAgent]: ⚠️ Skipping application (Fit score {match_score}% < {threshold}%). Explanation: {explanation}",
@@ -758,31 +773,37 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
         log.error(f"\n{'='*60}\nDETAILED RUNTIME FAILURE STACK (process_single_autoapply_job):\n{tb_str}{'='*60}")
         print(f"\n{'='*60}\nDETAILED RUNTIME FAILURE STACK:\n{tb_str}{'='*60}", flush=True)
 
-        # Update queue status to failed
+        # Update queue status to failed — log the error but never re-raise
+        # so browser cleanup in finally always executes.
         try:
             db_update_queue_status(queue_id, "failed", failure_reason=error_msg[:500])
-        except Exception:
-            pass
+        except Exception as db_err:
+            log.error(f"[{queue_id[:8]}] Additionally, failed to persist 'failed' status to DB: {db_err}")
 
-        # Send the EXACT error message to the WebSocket feed
+        # Send terminal application_completed event so the frontend spinner
+        # stops immediately and does NOT hang indefinitely.
         try:
             await _emit_autoapply_event(
-                run_id, "log",
+                run_id, "application_completed",
                 f"[AutoApplyAgent]: ❌ {entry.get('job_title', 'Unknown')} @ {entry.get('job_company', 'Unknown')}: CRASHED — {error_msg[:300]}",
                 {
                     "status": "failed",
                     "job_id": entry.get("job_id", ""),
                     "queue_id": queue_id,
+                    "job_title": entry.get("job_title", "Unknown"),
+                    "job_company": entry.get("job_company", "Unknown"),
+                    "stage": "failed",
                     "reason": error_msg[:500],
                     "stack_trace": tb_str[:1000],
                 },
                 user_id=user_id
             )
-        except Exception:
-            pass
+        except Exception as emit_err:
+            log.error(f"[{queue_id[:8]}] Failed to emit crash event to frontend: {emit_err}")
 
     finally:
         # ── ALWAYS reset agent status to idle ─────────────────────────────────
+        # This block runs whether the job succeeded, failed, or crashed.
         try:
             from models import AgentStatus as _AgentStatus
             store.update_agent_status(_AgentStatus(
@@ -790,8 +811,8 @@ Return ONLY the resume ID as plain text, with no extra characters or symbols.
                 name="AutoApply Agent",
                 status="idle",
             ))
-        except Exception:
-            pass
+        except Exception as idle_err:
+            log.warning(f"[{queue_id[:8]}] Failed to reset agent status to idle: {idle_err}")
 
 
 async def run_orchestrator_loop() -> None:

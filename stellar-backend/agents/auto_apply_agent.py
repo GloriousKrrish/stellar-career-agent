@@ -1648,11 +1648,13 @@ Do not include any markdown wrappers or surrounding text.
                     log_timeline_entry(current_func, "completed" if submitted else "failed")
                 else:
                     await logger.log("⏸️ Paused: Review the page in the browser window and click Submit manually.")
+                    # db_update_queue_status is defined in orchestrator.py, NOT in db.py.
                     try:
                         from agents.orchestrator import db_update_queue_status
-                        db_update_queue_status(task_id, "PENDING_SUBMIT")
-                    except Exception:
-                        pass
+                        db_update_queue_status(task_id, "requires_manual_intervention",
+                                               failure_reason="Manual submission requested — user must click Submit")
+                    except Exception as db_err:
+                        log.warning(f"Could not update queue status to pending_submit: {db_err}")
                     for _ in range(120):
                         if page.is_closed():
                             submitted = True
