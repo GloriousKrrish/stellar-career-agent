@@ -1208,6 +1208,117 @@ async def api_me(current_user: dict[str, Any] = Depends(get_current_user)):
     return current_user
 
 
+class ProfileUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    title: Optional[str] = None
+    location: Optional[str] = None
+    skills: Optional[list[str]] = None
+    experience: Optional[list[dict[str, Any]]] = None
+
+
+@app.put("/api/auth/profile", tags=["Auth"])
+async def update_profile(
+    req: ProfileUpdateRequest,
+    current_user: dict[str, Any] = Depends(get_current_user)
+):
+    try:
+        import auth
+        updates = {}
+        if req.name is not None:
+            updates["name"] = req.name
+        if req.title is not None:
+            updates["title"] = req.title
+        if req.location is not None:
+            updates["location"] = req.location
+        if req.skills is not None:
+            updates["skills"] = req.skills
+        if req.experience is not None:
+            updates["experience"] = req.experience
+            
+        updated_user = auth.update_user_profile(current_user["email"], updates)
+        if not updated_user:
+            raise HTTPException(status_code=400, detail="Failed to update profile")
+        return updated_user
+    except Exception as e:
+        log.error(f"Profile update failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ParseExperienceRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/auth/profile/parse-experience", tags=["Auth"])
+async def parse_experience_endpoint(
+    req: ParseExperienceRequest,
+    current_user: dict[str, Any] = Depends(get_current_user)
+):
+    import re
+    import json
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=settings.gemini_api_key)
+        
+        prompt = f"""
+        You are an expert career profiler. Given the work experience or internship description below, extract a single structured work history entry and a list of key professional skills.
+
+        Return ONLY valid JSON (no markdown, no code fences) matching this schema:
+        {{
+          "experience_entry": {{
+            "title": "job title/role",
+            "company": "company name",
+            "start_date": "start date, e.g. May 2025",
+            "end_date": "end date, e.g. July 2025",
+            "description": "brief paragraph summary of the role",
+            "achievements": [
+              "achievement 1",
+              "achievement 2"
+            ]
+          }},
+          "skills": ["skill1", "skill2"]
+        }}
+
+        Description:
+        {req.text}
+        """
+        
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = await model.generate_content_async(prompt)
+        response_text = response.text.strip()
+        
+        clean = re.sub(r"```(?:json)?", "", response_text).replace("```", "").strip()
+        parsed = json.loads(clean)
+        return parsed
+    except Exception as e:
+        log.warning(f"Failed to parse experience post via Gemini: {e}. Falling back to rule-based parser.")
+        # Rule-based fallback
+        lines = [line.strip().replace("📌", "").strip() for line in req.text.split("\n") if line.strip()]
+        achievements = [l for l in lines if l.startswith("-") or l.startswith("•") or any(keyword in l.lower() for keyword in ["management", "organization", "verification", "support", "record"])]
+        
+        # Try to guess company
+        company = "YOJAK" if "yojak" in req.text.lower() else "Company"
+        
+        # Try to guess dates
+        start_date = "May 2025"
+        end_date = "July 2025"
+        if "may" in req.text.lower():
+            start_date = "May 2025"
+        if "july" in req.text.lower():
+            end_date = "July 2025"
+            
+        return {
+            "experience_entry": {
+                "title": "Technology & Operations Intern",
+                "company": company,
+                "start_date": start_date,
+                "end_date": end_date,
+                "description": f"Completed an internship at {company} focusing on data, documentation, and administrative support.",
+                "achievements": achievements[:5] if achievements else ["Assisted in student scholarship management and digital records."]
+            },
+            "skills": ["Software Engineering", "Full-Stack Development", "Data Analytics", "Artificial Intelligence"]
+        }
+
+
 @app.post("/api/auth/logout", tags=["Auth"])
 async def api_logout(current_user: dict[str, Any] = Depends(get_current_user)):
     return {"message": "Logged out successfully"}

@@ -85,11 +85,80 @@ function SettingsPage() {
   }>>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
 
+  const [profileName, setProfileName] = useState("");
+  const [profileTitle, setProfileTitle] = useState("");
+  const [profileLocation, setProfileLocation] = useState("");
+  const [profileSkills, setProfileSkills] = useState<string[]>([]);
+  const [profileExperience, setProfileExperience] = useState<any[]>([]);
+  const [newSkillText, setNewSkillText] = useState("");
+  const [postText, setPostText] = useState("");
+  const [parsingPost, setParsingPost] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+
   const user = getCurrentUser() || {
     name: "Job Seeker",
     email: "",
     title: "Software Engineer",
     location: "Remote",
+  };
+
+  useEffect(() => {
+    const activeUser = getCurrentUser();
+    if (activeUser) {
+      setProfileName(activeUser.name || "");
+      setProfileTitle(activeUser.title || "");
+      setProfileLocation(activeUser.location || "");
+      setProfileSkills(activeUser.skills || []);
+      setProfileExperience(activeUser.experience || []);
+    }
+  }, []);
+
+  const handleSaveProfile = async () => {
+    setProfileSaving(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const updated = await api.updateProfile({
+        name: profileName,
+        title: profileTitle,
+        location: profileLocation,
+        skills: profileSkills,
+        experience: profileExperience,
+      });
+      setSuccessMsg("Profile saved successfully!");
+    } catch (err: any) {
+      setErrorMsg(err.message || "Failed to save profile.");
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const handleParsePost = async () => {
+    if (!postText.trim()) return;
+    setParsingPost(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const parsed = await api.parseExperience(postText);
+      if (parsed.experience_entry) {
+        setProfileExperience((prev) => [...prev, parsed.experience_entry]);
+      }
+      if (parsed.skills && parsed.skills.length > 0) {
+        setProfileSkills((prev) => {
+          const merged = [...prev];
+          parsed.skills.forEach((s) => {
+            if (!merged.includes(s)) merged.push(s);
+          });
+          return merged;
+        });
+      }
+      setSuccessMsg("Successfully parsed internship/work experience post and added to your profile!");
+      setPostText("");
+    } catch (err: any) {
+      setErrorMsg(err.message || "Failed to parse experience post.");
+    } finally {
+      setParsingPost(false);
+    }
   };
 
   const initials = user.name
@@ -204,20 +273,301 @@ function SettingsPage() {
 
         <div className="space-y-4">
           {section === "Profile" && (
-            <div className="rounded-2xl border border-border bg-card p-6 shadow-soft space-y-5">
-              <div className="flex items-center gap-4">
-                <div className="h-16 w-16 rounded-full bg-foreground text-background flex items-center justify-center font-display text-xl">{initials}</div>
-                <div>
-                  <div className="font-display text-lg">{user.name}</div>
-                  <div className="text-xs text-muted-foreground">{user.title || "Software Engineer"} · {user.location || "Remote"}</div>
+            <div className="space-y-6">
+              {/* Profile Details Card */}
+              <div className="rounded-2xl border border-border bg-card p-6 shadow-soft space-y-5">
+                <div className="flex items-center gap-4">
+                  <div className="h-16 w-16 rounded-full bg-foreground text-background flex items-center justify-center font-display text-xl">{initials}</div>
+                  <div>
+                    <div className="font-display text-lg">{profileName || "Job Seeker"}</div>
+                    <div className="text-xs text-muted-foreground">{profileTitle || "Software Engineer"} · {profileLocation || "Remote"}</div>
+                  </div>
                 </div>
-                <button className="ml-auto text-xs rounded-full border border-border px-3 py-1.5 hover:bg-muted">Change photo</button>
+
+                {errorMsg && (
+                  <div className="p-3 bg-red-500/15 border border-red-500/20 rounded-xl flex gap-2 text-red-200 text-xs">
+                    <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                    <div>{errorMsg}</div>
+                  </div>
+                )}
+
+                {successMsg && (
+                  <div className="p-3 bg-emerald-500/15 border border-emerald-500/20 rounded-xl flex gap-2 text-emerald-200 text-xs">
+                    <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
+                    <div>{successMsg}</div>
+                  </div>
+                )}
+
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <label className="block">
+                    <span className="text-xs text-muted-foreground">Full name</span>
+                    <input 
+                      value={profileName} 
+                      onChange={(e) => setProfileName(e.target.value)}
+                      className="mt-1.5 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent" 
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-muted-foreground">Email (read-only)</span>
+                    <input 
+                      value={user.email} 
+                      disabled
+                      className="mt-1.5 w-full rounded-xl border border-border bg-muted/50 px-3 py-2 text-sm outline-none cursor-not-allowed" 
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-muted-foreground">Title</span>
+                    <input 
+                      value={profileTitle} 
+                      onChange={(e) => setProfileTitle(e.target.value)}
+                      className="mt-1.5 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent" 
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="text-xs text-muted-foreground">Location</span>
+                    <input 
+                      value={profileLocation} 
+                      onChange={(e) => setProfileLocation(e.target.value)}
+                      className="mt-1.5 w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent" 
+                    />
+                  </label>
+                </div>
               </div>
-              <div className="grid sm:grid-cols-2 gap-4">
-                <Field label="Full name" defaultValue={user.name} />
-                <Field label="Email" defaultValue={user.email} />
-                <Field label="Title" defaultValue={user.title || "Software Engineer"} />
-                <Field label="Location" defaultValue={user.location || "Remote"} />
+
+              {/* Quick AI Experience Parser Card */}
+              <div className="rounded-2xl border border-border bg-card p-6 shadow-soft space-y-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">AI Quick-Parse Work Experience</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Paste a LinkedIn post, internship description, or resume snippet to automatically parse and structure it using Gemini.
+                  </p>
+                </div>
+                <textarea
+                  value={postText}
+                  onChange={(e) => setPostText(e.target.value)}
+                  placeholder="e.g. Completed my 3-month internship at YOJAK NGO, Nigdi... worked on Student scholarship management and documentation..."
+                  rows={4}
+                  className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent resize-none"
+                />
+                <div className="flex justify-end">
+                  <button
+                    onClick={handleParsePost}
+                    disabled={parsingPost || !postText.trim()}
+                    className="rounded-xl bg-accent text-accent-foreground font-medium text-xs px-4 py-2 hover:opacity-90 transition-opacity flex items-center gap-1.5"
+                  >
+                    {parsingPost && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    Parse & Add Experience
+                  </button>
+                </div>
+              </div>
+
+              {/* Skills Card */}
+              <div className="rounded-2xl border border-border bg-card p-6 shadow-soft space-y-4">
+                <h3 className="text-sm font-semibold text-foreground">Skills</h3>
+                <div className="flex flex-wrap gap-2">
+                  {profileSkills.map((s, idx) => (
+                    <span 
+                      key={s + idx} 
+                      className="inline-flex items-center gap-1 bg-muted px-2.5 py-1 rounded-full text-xs font-medium text-muted-foreground"
+                    >
+                      {s}
+                      <button 
+                        onClick={() => setProfileSkills((prev) => prev.filter((_, i) => i !== idx))}
+                        className="hover:text-foreground text-[10px]"
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                  {profileSkills.length === 0 && (
+                    <span className="text-xs text-muted-foreground">No skills added yet.</span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    value={newSkillText}
+                    onChange={(e) => setNewSkillText(e.target.value)}
+                    placeholder="Add a skill"
+                    className="flex-1 rounded-xl border border-border bg-background px-3 py-1.5 text-xs outline-none focus:border-accent"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newSkillText.trim()) {
+                        if (!profileSkills.includes(newSkillText.trim())) {
+                          setProfileSkills([...profileSkills, newSkillText.trim()]);
+                        }
+                        setNewSkillText("");
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      if (newSkillText.trim()) {
+                        if (!profileSkills.includes(newSkillText.trim())) {
+                          setProfileSkills([...profileSkills, newSkillText.trim()]);
+                        }
+                        setNewSkillText("");
+                      }
+                    }}
+                    className="rounded-xl border border-border text-xs px-3 py-1.5 hover:bg-muted font-medium"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              {/* Work Experience Card */}
+              <div className="rounded-2xl border border-border bg-card p-6 shadow-soft space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-foreground">Work Experience</h3>
+                  <button
+                    onClick={() => setProfileExperience([...profileExperience, {
+                      title: "New Role",
+                      company: "Company Name",
+                      start_date: "Month Year",
+                      end_date: "Month Year",
+                      description: "",
+                      achievements: []
+                    }])}
+                    className="rounded-xl border border-border text-[11px] px-2.5 py-1 hover:bg-muted font-medium flex items-center gap-1"
+                  >
+                    <Plus className="h-3 w-3" /> Add Manually
+                  </button>
+                </div>
+
+                <div className="space-y-4 divide-y divide-border/60">
+                  {profileExperience.map((exp, idx) => (
+                    <div key={idx} className="pt-4 first:pt-0 space-y-3">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="grid sm:grid-cols-2 gap-3 flex-1">
+                          <label className="block">
+                            <span className="text-[10px] text-muted-foreground">Job Title</span>
+                            <input
+                              value={exp.title || ""}
+                              onChange={(e) => {
+                                const next = [...profileExperience];
+                                next[idx].title = e.target.value;
+                                setProfileExperience(next);
+                              }}
+                              className="mt-1 w-full rounded-lg border border-border bg-background px-2.5 py-1 text-xs outline-none focus:border-accent"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[10px] text-muted-foreground">Company</span>
+                            <input
+                              value={exp.company || ""}
+                              onChange={(e) => {
+                                const next = [...profileExperience];
+                                next[idx].company = e.target.value;
+                                setProfileExperience(next);
+                              }}
+                              className="mt-1 w-full rounded-lg border border-border bg-background px-2.5 py-1 text-xs outline-none focus:border-accent"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[10px] text-muted-foreground">Start Date</span>
+                            <input
+                              value={exp.start_date || ""}
+                              onChange={(e) => {
+                                const next = [...profileExperience];
+                                next[idx].start_date = e.target.value;
+                                setProfileExperience(next);
+                              }}
+                              className="mt-1 w-full rounded-lg border border-border bg-background px-2.5 py-1 text-xs outline-none focus:border-accent"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[10px] text-muted-foreground">End Date</span>
+                            <input
+                              value={exp.end_date || ""}
+                              onChange={(e) => {
+                                const next = [...profileExperience];
+                                next[idx].end_date = e.target.value;
+                                setProfileExperience(next);
+                              }}
+                              className="mt-1 w-full rounded-lg border border-border bg-background px-2.5 py-1 text-xs outline-none focus:border-accent"
+                            />
+                          </label>
+                        </div>
+                        <button
+                          onClick={() => setProfileExperience((prev) => prev.filter((_, i) => i !== idx))}
+                          className="text-red-400 hover:text-red-300 text-xs font-medium mt-6 font-semibold"
+                        >
+                          Remove
+                        </button>
+                      </div>
+
+                      <label className="block">
+                        <span className="text-[10px] text-muted-foreground">Description</span>
+                        <textarea
+                          value={exp.description || ""}
+                          onChange={(e) => {
+                            const next = [...profileExperience];
+                            next[idx].description = e.target.value;
+                            setProfileExperience(next);
+                          }}
+                          rows={2}
+                          className="mt-1 w-full rounded-lg border border-border bg-background px-2.5 py-1 text-xs outline-none focus:border-accent resize-none"
+                        />
+                      </label>
+
+                      {/* Achievements list */}
+                      <div className="space-y-1.5">
+                        <span className="text-[10px] text-muted-foreground block">Key Achievements & Responsibilities</span>
+                        {(exp.achievements || []).map((ach: string, achIdx: number) => (
+                          <div key={achIdx} className="flex gap-2 items-center">
+                            <input
+                              value={ach}
+                              onChange={(e) => {
+                                const next = [...profileExperience];
+                                next[idx].achievements[achIdx] = e.target.value;
+                                setProfileExperience(next);
+                              }}
+                              className="flex-1 rounded-lg border border-border bg-background px-2.5 py-1 text-xs outline-none focus:border-accent"
+                            />
+                            <button
+                              onClick={() => {
+                                const next = [...profileExperience];
+                                next[idx].achievements = next[idx].achievements.filter((_: any, i: number) => i !== achIdx);
+                                setProfileExperience(next);
+                              }}
+                              className="text-muted-foreground hover:text-foreground text-xs"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                        <button
+                          onClick={() => {
+                            const next = [...profileExperience];
+                            if (!next[idx].achievements) next[idx].achievements = [];
+                            next[idx].achievements.push("");
+                            setProfileExperience(next);
+                          }}
+                          className="text-[10px] text-accent hover:underline font-medium"
+                        >
+                          + Add Achievement
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  {profileExperience.length === 0 && (
+                    <div className="text-center py-4 text-xs text-muted-foreground">
+                      No work experiences added yet. Try pasting your experience post above!
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Save All Profile Changes */}
+              <div className="flex justify-end pt-2">
+                <button
+                  onClick={handleSaveProfile}
+                  disabled={profileSaving}
+                  className="rounded-xl bg-foreground text-background font-medium text-xs px-6 py-2.5 hover:opacity-90 transition-opacity flex items-center gap-2"
+                >
+                  {profileSaving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  Save All Profile Changes
+                </button>
               </div>
             </div>
           )}

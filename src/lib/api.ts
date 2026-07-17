@@ -306,4 +306,38 @@ export const api = {
       method: "POST",
     });
   },
+
+  async updateProfile(updates: {
+    name?: string;
+    title?: string;
+    location?: string;
+    skills?: string[];
+    experience?: any[];
+  }) {
+    const user = await request<any>("/api/auth/profile", {
+      method: "PUT",
+      body: JSON.stringify(updates),
+    });
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("aria.user", JSON.stringify(user));
+    }
+    return user;
+  },
+
+  async parseExperience(text: string) {
+    return request<{
+      experience_entry: {
+        title: string;
+        company: string;
+        start_date: string;
+        end_date: string;
+        description: string;
+        achievements: string[];
+      };
+      skills: string[];
+    }>("/api/auth/profile/parse-experience", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+  },
 };
